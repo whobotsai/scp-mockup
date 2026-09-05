@@ -65,6 +65,13 @@ equivalent the team already knows.
 
 ### Stage 0 — Foundations (contracts + registration in parallel)
 
+> **Progress:** `SHOFactory`/`SHOCampaign`, `SSOFactory`/`SSOCampaign`, and `Registry` are
+> written and covered by 33 passing tests against a local simulated chain — see
+> `../contracts/`. **Not yet done:** public testnet deployment (needs a chosen testnet, an
+> RPC endpoint, and a funded deployer key — infrastructure decisions, not something to pick
+> unilaterally) and the Registration Service's actual OAuth backend (only the on-chain
+> attestation-verification side exists so far).
+
 **Contracts workstream:**
 - `SHOFactory.sol` / `SHOCampaign.sol` per PRD §4.1–§4.3: `createCampaign`, `postMilestoneRoot`,
   `claim`, the four events, the EIP-1167 clone pattern.
