@@ -17,11 +17,12 @@ Built for Robinhood Chain, integrating with the Pons.family launchpad.
 ## What's in this repo
 
 ```
-public/index.html    Interactive frontend prototype (React, no build step)
-docs/PRD.md           Product & technical specification
-docs/WHITEPAPER.md    Formal mechanism design write-up
-firebase.json         Firebase Hosting config
-.firebaserc           Firebase project binding (set your project ID here)
+public/index.html          Interactive frontend prototype (React, no build step)
+docs/PRD.md                 Product & technical specification
+docs/WHITEPAPER.md          Formal mechanism design write-up
+docs/BACKEND_ROADMAP.md      Engineering roadmap for building the real backend
+firebase.json               Firebase Hosting config
+.firebaserc                 Firebase project binding (set your project ID here)
 ```
 
 ## The prototype
