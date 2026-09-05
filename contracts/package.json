@@ -1,0 +1,19 @@
+{
+  "name": "contracts",
+  "version": "1.0.0",
+  "description": "Strong Commitment Protocol smart contracts (SHO/SSO factories and campaigns, Registry)",
+  "main": "index.js",
+  "scripts": {
+    "compile": "node scripts/compile.js",
+    "test": "node scripts/compile.js && node scripts/test-all.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@openzeppelin/contracts": "5.0.2",
+    "hardhat": "^2.29.1",
+    "solc": "^0.8.24"
+  }
+}
