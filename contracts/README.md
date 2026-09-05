@@ -81,6 +81,28 @@ To deploy the same thing to a different network later (including mainnet, chain 
 PRD.md's header), just point `.env` at that network's RPC and a funded key — nothing else
 about `scripts/deploy.js` changes.
 
+## Manual end-to-end test on testnet
+
+Stage 0's exit criteria (`../docs/BACKEND_ROADMAP.md`) is a campaign walked through
+milestone-reached / claim by hand, with no automated keeper yet. `scripts/test/` does exactly
+that against the live testnet deployment, using the deployer wallet as both creator and
+keeper (both default to it, per the deploy step above).
+
+1. `npm run test:campaign:create` — creates a real SHO campaign funded with a small amount
+   of native ETH (0.002 ETH gross), one milestone, 100% of the pool to that milestone. Saves
+   the new campaign's clone address to `deployments/test-campaign.json`.
+2. `npm run test:campaign:post-root` — posts a Merkle root as keeper, for a tree with a
+   single leaf: the deployer claiming the whole pool. Opens the real 24h challenge window.
+3. Wait — this is a real chain, so that means **actually waiting 24 hours**, not a simulated
+   `evm_increaseTime` like the local test suite uses.
+4. `npm run test:campaign:claim` — claims the reward once the challenge window has actually
+   elapsed (the script checks and refuses to run early).
+
+If this all succeeds, the full SHO lifecycle (create → milestone root → challenge window →
+claim) works end-to-end on a real network with zero contract changes needed — Stage 0 is
+done, and Stage 1 (the actual keeper service) is what replaces step 2's manual call with a
+real indexer.
+
 ## Engineering notes / deliberate deviations from the PRD's illustrative signatures
 
 - **`OpenZeppelin Contracts` is pinned to `5.0.2`, and compilation targets `evmVersion:

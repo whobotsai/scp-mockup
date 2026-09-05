@@ -6,7 +6,10 @@
   "scripts": {
     "compile": "node scripts/compile.js",
     "test": "node scripts/compile.js && node scripts/test-all.js",
-    "deploy": "node scripts/deploy.js"
+    "deploy": "node scripts/deploy.js",
+    "test:campaign:create": "node scripts/test/01-create-campaign.js",
+    "test:campaign:post-root": "node scripts/test/02-post-root.js",
+    "test:campaign:claim": "node scripts/test/03-claim.js"
   },
   "keywords": [],
   "author": "",
