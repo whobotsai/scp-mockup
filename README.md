@@ -21,6 +21,7 @@ public/index.html          Interactive frontend prototype (React, no build step)
 docs/PRD.md                 Product & technical specification
 docs/WHITEPAPER.md          Formal mechanism design write-up
 docs/BACKEND_ROADMAP.md      Engineering roadmap for building the real backend
+docs/KEEPER_SERVICE_DESIGN.md  Stage 1 keeper service technical design
 contracts/                  Smart contracts (SHO/SSO factories and campaigns, Registry)
 firebase.json               Firebase Hosting config
 .firebaserc                 Firebase project binding (set your project ID here)

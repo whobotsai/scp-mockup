@@ -94,6 +94,11 @@ manually walked through milestone-reached / claim by hand (no automated keeper y
 
 ### Stage 1 — Keeper service
 
+> **Design:** see [`KEEPER_SERVICE_DESIGN.md`](./KEEPER_SERVICE_DESIGN.md) for the concrete
+> module breakdown, data model, job/queue architecture, and open infra decisions (IPFS
+> pinning provider, X API tier, archive node provider, on-call rotation) this stage needs
+> before it can actually run.
+
 - Chain indexer against the testnet deployment: subscribe to the campaigning token's Pons
   bonding-curve contract and (post-graduation) its Uniswap V4 pool (PRD §3.2).
 - Volume aggregator (rolling net-buy volume per wallet, per window) and the 30-minute TWAP
