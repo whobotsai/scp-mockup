@@ -1,0 +1,13 @@
+{
+  "chainId": "46630",
+  "deployedAt": "2026-09-05T00:00:00.000Z",
+  "owner": "0xe83ec6F9a71536C8D2c2a24dbdD8326a51F94603",
+  "treasury": "0xe83ec6F9a71536C8D2c2a24dbdD8326a51F94603",
+  "keeper": "0xe83ec6F9a71536C8D2c2a24dbdD8326a51F94603",
+  "attestor": "0xe83ec6F9a71536C8D2c2a24dbdD8326a51F94603",
+  "contracts": {
+    "SHOFactory": "0x257F835b1066c064e9e9896c31556034f8Eee8c9",
+    "SSOFactory": "0x3770ae529595D0994297C35F7b75CEAD612749aa",
+    "Registry": "0xc2ed3d2b8CCa32B8cBC6F6a99D538129c1430065"
+  }
+}
