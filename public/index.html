@@ -3,6 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+// Set the theme attribute before first paint so there is no flash of the wrong
+// theme while React mounts (dark is the default; this mirrors the logic in App()).
+(function(){
+  try{
+    var t = localStorage.getItem('so_theme') || 'dark';
+    if(t !== 'auto') document.documentElement.setAttribute('data-theme', t);
+  }catch(e){}
+})();
+</script>
 <title>Strong Commitment Protocol</title>
 <style>
 /* ============ FONTS ============ */
@@ -220,7 +230,7 @@ button{font-family:inherit;}
 
 /* Settlement rail: the hero's signature visual. A single schematic ledger line
    showing the mechanism itself (lock -> milestone -> payout), not decoration. */
-.rail-wrap{position:absolute;left:-2%;right:-2%;bottom:-6%;width:104%;aspect-ratio:1000/170;z-index:0;pointer-events:none;}
+.rail-wrap{position:absolute;left:-2%;right:-2%;bottom:0;width:104%;aspect-ratio:1000/170;z-index:0;pointer-events:none;}
 .rail-svg{width:100%;height:100%;display:block;overflow:visible;}
 .rail-path{fill:none;stroke:color-mix(in srgb, var(--text) 16%, transparent);stroke-width:1.5;stroke-dasharray:2 7;stroke-linecap:round;}
 .rail-node-ring{fill:none;stroke:var(--accent);stroke-width:1.5;opacity:.6;transform-box:fill-box;transform-origin:center;animation:railPulse 3.2s ease-out infinite;}
@@ -749,7 +759,7 @@ function leaderboard(seedBase, n, scoreLabel){
 function fmtNum(n){
   if(n>=1000000) return (n/1000000).toFixed(2).replace(/\.00$/,'')+'M';
   if(n>=1000) return (n/1000).toFixed(1).replace(/\.0$/,'')+'K';
-  return String(n);
+  return String(Math.round(n));
 }
 function fmtUSD(n){ return '$'+fmtNum(n); }
 function pctToNext(mcap, tiers){
