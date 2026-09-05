@@ -90,7 +90,11 @@
 *{box-sizing:border-box;}
 html,body{margin:0;padding:0;}
 body{
-  background:var(--bg);
+  background-color:var(--bg);
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px);
+  background-size:28px 28px;
   color:var(--text);
   font-family:'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
   font-size:15px;
@@ -214,30 +218,20 @@ button{font-family:inherit;}
 .hero-grid{position:relative;z-index:1;}
 .hero > .stat-groups, .hero > .stats-note{position:relative;z-index:1;}
 
-.hero-bg{position:absolute;inset:-10% -6%;z-index:0;pointer-events:none;overflow:hidden;}
-.hero-blob{position:absolute;border-radius:50%;filter:blur(46px);opacity:.5;}
-.hero-blob.b1{width:420px;height:420px;left:-8%;top:-12%;background:radial-gradient(circle,var(--accent) 0%,transparent 72%);animation:blobDrift1 26s ease-in-out infinite alternate;}
-.hero-blob.b2{width:340px;height:340px;right:-4%;top:8%;background:radial-gradient(circle,var(--surface) 0%,transparent 70%);opacity:.35;animation:blobDrift2 22s ease-in-out infinite alternate;}
-.hero-blob.b3{width:300px;height:300px;left:32%;bottom:-16%;background:radial-gradient(circle,var(--accent-strong) 0%,transparent 72%);opacity:.3;animation:blobDrift3 30s ease-in-out infinite alternate;}
+/* Settlement rail: the hero's signature visual. A single schematic ledger line
+   showing the mechanism itself (lock -> milestone -> payout), not decoration. */
+.rail-wrap{position:absolute;left:-2%;right:-2%;bottom:-6%;width:104%;aspect-ratio:1000/170;z-index:0;pointer-events:none;}
+.rail-svg{width:100%;height:100%;display:block;overflow:visible;}
+.rail-path{fill:none;stroke:color-mix(in srgb, var(--text) 16%, transparent);stroke-width:1.5;stroke-dasharray:2 7;stroke-linecap:round;}
+.rail-node-ring{fill:none;stroke:var(--accent);stroke-width:1.5;opacity:.6;transform-box:fill-box;transform-origin:center;animation:railPulse 3.2s ease-out infinite;}
+.rail-node-dot{fill:var(--accent);}
+.rail-pulse{fill:var(--accent);filter:drop-shadow(0 0 5px var(--accent));}
+.rail-label{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.1em;fill:var(--text-dim);text-transform:uppercase;}
 
-.hero-float{position:absolute;color:var(--text);opacity:.12;}
-:root[data-theme="dark"] .hero-float{opacity:.16;}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .hero-float{opacity:.16;}}
-.hero-float.f1{top:10%;left:6%;animation:floatBob1 16s ease-in-out infinite;}
-.hero-float.f2{top:66%;left:2%;animation:floatBob2 19s ease-in-out infinite;animation-delay:-4s;}
-.hero-float.f3{top:14%;right:30%;animation:floatBob3 21s ease-in-out infinite;animation-delay:-9s;}
-.hero-float.f4{bottom:8%;right:6%;animation:floatBob1 18s ease-in-out infinite;animation-delay:-6s;}
-.hero-float.f5{top:48%;right:4%;animation:floatBob2 14s ease-in-out infinite;animation-delay:-2s;}
-
-@keyframes blobDrift1{from{transform:translate(0,0) scale(1);}to{transform:translate(6%,8%) scale(1.12);}}
-@keyframes blobDrift2{from{transform:translate(0,0) scale(1);}to{transform:translate(-8%,6%) scale(0.94);}}
-@keyframes blobDrift3{from{transform:translate(0,0) scale(1);}to{transform:translate(5%,-7%) scale(1.08);}}
-@keyframes floatBob1{0%,100%{transform:translateY(0) rotate(0deg);}50%{transform:translateY(-18px) rotate(6deg);}}
-@keyframes floatBob2{0%,100%{transform:translateY(0) rotate(0deg);}50%{transform:translateY(14px) rotate(-8deg);}}
-@keyframes floatBob3{0%,100%{transform:translateY(0) rotate(0deg);}50%{transform:translateY(-12px) rotate(4deg);}}
+@keyframes railPulse{0%{transform:scale(.7);opacity:.65;}100%{transform:scale(2.1);opacity:0;}}
 
 @media (prefers-reduced-motion: reduce){
-  .hero-blob,.hero-float{animation:none !important;}
+  .rail-node-ring{animation:none;opacity:.35;}
 }
 .hero-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:56px;align-items:center;}
 .hero h1{font-size:56px;line-height:.98;margin:14px 0 18px;}
@@ -252,8 +246,18 @@ button{font-family:inherit;}
   display:flex;align-items:center;justify-content:center;position:relative;
   box-shadow:var(--shadow);
 }
-.vault svg{width:100%;height:100%;}
-.vault-center{position:absolute;text-align:center;max-width:60%;}
+.vault svg{width:100%;height:100%;position:relative;z-index:1;}
+.vault-sweep{
+  position:absolute;inset:6%;border-radius:50%;z-index:0;pointer-events:none;
+  background:conic-gradient(from 0deg, transparent 0%, var(--accent) 6%, transparent 22%);
+  -webkit-mask:radial-gradient(circle, transparent 62%, #000 63%, #000 74%, transparent 75%);
+  mask:radial-gradient(circle, transparent 62%, #000 63%, #000 74%, transparent 75%);
+  animation:vaultSpin 5s linear infinite;
+  opacity:.6;
+}
+@keyframes vaultSpin{to{transform:rotate(360deg);}}
+@media (prefers-reduced-motion: reduce){ .vault-sweep{animation:none;} }
+.vault-center{position:absolute;z-index:2;text-align:center;max-width:60%;}
 .vault-center .num{font-family:'Big Shoulders';font-size:34px;font-weight:800;color:var(--text);display:block;line-height:1;}
 .vault-center .lbl{font-family:'IBM Plex Mono';font-size:9.5px;letter-spacing:.04em;color:var(--text-dim);text-transform:uppercase;display:block;margin-top:6px;line-height:1.4;}
 
@@ -270,6 +274,15 @@ button{font-family:inherit;}
 .stat-tile .num{font-family:'Big Shoulders';font-size:26px;font-weight:800;display:block;color:var(--text);}
 .stat-tile .lbl{font-size:11.5px;color:var(--text-dim);margin-top:2px;}
 .stats-note{font-size:11.5px;color:var(--text-faint);margin-top:10px;}
+.live-dot{
+  margin-left:auto;width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none;
+  animation:liveDotPulse 2s ease-out infinite;
+}
+@keyframes liveDotPulse{
+  0%{box-shadow:0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent);}
+  100%{box-shadow:0 0 0 7px transparent;}
+}
+@media (prefers-reduced-motion: reduce){ .live-dot{animation:none;} }
 
 /* ============ PROFILE ============ */
 .profile-head{display:flex;align-items:center;gap:16px;margin:8px 0 26px;flex-wrap:wrap;}
@@ -841,11 +854,32 @@ function Meter({pct}){
   return <div className="meter-track"><div className="meter-fill" style={{width:pct+'%'}}></div></div>;
 }
 
+// Tweens 0 -> target on mount with an ease-out curve; snaps instantly for reduced-motion.
+function useCountUp(target, duration=1200){
+  const [val, setVal] = useState(0);
+  useEffect(()=>{
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if(reduce){ setVal(target); return; }
+    let raf, start;
+    const tick = (t)=>{
+      if(start===undefined) start = t;
+      const p = Math.min(1, (t-start)/duration);
+      setVal(target*(1-Math.pow(1-p,3)));
+      if(p<1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return ()=>cancelAnimationFrame(raf);
+  }, [target, duration]);
+  return val;
+}
+
 function VaultDial(){
-  const pct = 62;
+  const pct = useCountUp(62, 1400);
+  const amount = useCountUp(2.44, 1400);
   const r = 42, c = 2*Math.PI*r;
   return (
     <div className="vault">
+      <div className="vault-sweep" aria-hidden="true"></div>
       <svg viewBox="0 0 100 100">
         <circle cx="50" cy="50" r={r} fill="none" stroke="var(--surface-2)" strokeWidth="7"/>
         <circle cx="50" cy="50" r={r} fill="none" stroke="var(--accent)" strokeWidth="7"
@@ -859,11 +893,48 @@ function VaultDial(){
         })}
       </svg>
       <div className="vault-center">
-        <span className="num">$2.44M</span>
+        <span className="num">${amount.toFixed(2)}M</span>
         <span className="lbl">available across all campaigns</span>
       </div>
     </div>
   );
+}
+
+// The hero's signature visual: a schematic ledger line tracing the mechanism itself
+// (lock -> milestone -> payout) with pulses flowing along it, not decorative shapes.
+function SettlementRail(){
+  const railD = "M40,120 C280,20 420,220 500,120 C580,20 720,220 960,120";
+  const nodes = [
+    {x:40, y:120, label:'LOCK'},
+    {x:500, y:120, label:'MILESTONE'},
+    {x:960, y:120, label:'PAYOUT'},
+  ];
+  const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  return (
+    <div className="rail-wrap" aria-hidden="true">
+      <svg className="rail-svg" viewBox="0 0 1000 170">
+        <path className="rail-path" d={railD}/>
+        {!reduceMotion && [0,1,2].map(i=>(
+          <circle key={i} r="4" className="rail-pulse">
+            <animateMotion dur="6s" begin={`${i*2}s`} repeatCount="indefinite" path={railD}/>
+          </circle>
+        ))}
+        {nodes.map((n,i)=>(
+          <g key={n.label}>
+            <circle cx={n.x} cy={n.y} r="14" className="rail-node-ring" style={{animationDelay:`${i}s`}}/>
+            <circle cx={n.x} cy={n.y} r="5" className="rail-node-dot"/>
+            <text x={n.x} y={n.y+34} textAnchor="middle" className="rail-label">{n.label}</text>
+          </g>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+// A stat-tile number that counts up from 0 on mount instead of sitting there static.
+function StatNum({value, format}){
+  const shown = useCountUp(value, 1300);
+  return <span className="num">{format(shown)}</span>;
 }
 
 function CampaignCard({c, kind, onOpen}){
@@ -910,16 +981,7 @@ function Landing({go}){
   return (
     <div className="page" style={{paddingTop:0}}>
       <div className="wrap hero">
-        <div className="hero-bg" aria-hidden="true">
-          <div className="hero-blob b1"></div>
-          <div className="hero-blob b2"></div>
-          <div className="hero-blob b3"></div>
-          <IcoLock size={76} sw={1.2} className="hero-float f1"/>
-          <IcoTarget size={92} sw={1.2} className="hero-float f2"/>
-          <IcoCoins size={68} sw={1.2} className="hero-float f3"/>
-          <IcoTrophy size={80} sw={1.2} className="hero-float f4"/>
-          <IcoMegaphone size={64} sw={1.2} className="hero-float f5"/>
-        </div>
+        <SettlementRail/>
         <div className="hero-grid">
           <div>
             <span className="eyebrow">Turn Commitment Into Growth</span>
@@ -936,19 +998,19 @@ function Landing({go}){
 
         <div className="stat-groups">
           <div className="stat-group">
-            <div className="stat-group-head sho"><IcoTrendUp size={13}/>SHO metrics</div>
+            <div className="stat-group-head sho"><IcoTrendUp size={13}/>SHO metrics<span className="live-dot" aria-hidden="true"></span></div>
             <div className="stat-group-body">
-              <div className="stat-tile"><IcoCoins size={17} style={{color:'var(--accent)'}}/><span className="num">$2.4M</span><span className="lbl">total reward pool</span></div>
-              <div className="stat-tile"><IcoTrophy size={17} style={{color:'var(--accent)'}}/><span className="num">$640K</span><span className="lbl">distributed rewards</span></div>
-              <div className="stat-tile"><IcoLayers size={17} style={{color:'var(--accent)'}}/><span className="num">{SHO_CAMPAIGNS.length}</span><span className="lbl">total campaigns</span></div>
+              <div className="stat-tile"><IcoCoins size={17} style={{color:'var(--accent)'}}/><StatNum value={2.4} format={v=>'$'+v.toFixed(1)+'M'}/><span className="lbl">total reward pool</span></div>
+              <div className="stat-tile"><IcoTrophy size={17} style={{color:'var(--accent)'}}/><StatNum value={640} format={v=>'$'+Math.round(v)+'K'}/><span className="lbl">distributed rewards</span></div>
+              <div className="stat-tile"><IcoLayers size={17} style={{color:'var(--accent)'}}/><StatNum value={SHO_CAMPAIGNS.length} format={v=>Math.round(v)}/><span className="lbl">total campaigns</span></div>
             </div>
           </div>
           <div className="stat-group">
-            <div className="stat-group-head sso"><IcoMegaphone size={13}/>SSO metrics</div>
+            <div className="stat-group-head sso"><IcoMegaphone size={13}/>SSO metrics<span className="live-dot" aria-hidden="true"></span></div>
             <div className="stat-group-body">
-              <div className="stat-tile"><IcoCoins size={17} style={{color:'var(--accent)'}}/><span className="num">$890K</span><span className="lbl">total reward pool</span></div>
-              <div className="stat-tile"><IcoTrophy size={17} style={{color:'var(--accent)'}}/><span className="num">$215K</span><span className="lbl">distributed rewards</span></div>
-              <div className="stat-tile"><IcoLayers size={17} style={{color:'var(--accent)'}}/><span className="num">{SSO_CAMPAIGNS.length}</span><span className="lbl">total campaigns</span></div>
+              <div className="stat-tile"><IcoCoins size={17} style={{color:'var(--accent)'}}/><StatNum value={890} format={v=>'$'+Math.round(v)+'K'}/><span className="lbl">total reward pool</span></div>
+              <div className="stat-tile"><IcoTrophy size={17} style={{color:'var(--accent)'}}/><StatNum value={215} format={v=>'$'+Math.round(v)+'K'}/><span className="lbl">distributed rewards</span></div>
+              <div className="stat-tile"><IcoLayers size={17} style={{color:'var(--accent)'}}/><StatNum value={SSO_CAMPAIGNS.length} format={v=>Math.round(v)}/><span className="lbl">total campaigns</span></div>
             </div>
           </div>
         </div>
@@ -1749,10 +1811,10 @@ function Profile({go, user, notify}){
         ) : (
           <>
             <div className="profile-stats">
-              <div className="stat-tile"><IcoCoins size={20}/><div><span className="num">{fmtUSD(totalClaimedUsd)}</span><span className="lbl">Total claimed</span></div></div>
-              <div className="stat-tile accent"><IcoCheckCirc size={20}/><div><span className="num">{fmtUSD(totalClaimableUsd)}</span><span className="lbl">Claimable now</span></div></div>
-              <div className="stat-tile"><IcoTarget size={20}/><div><span className="num">{activeCount}</span><span className="lbl">Active positions</span></div></div>
-              <div className="stat-tile"><IcoFlask size={20}/><div><span className="num">{createdCount}</span><span className="lbl">Campaigns created</span></div></div>
+              <div className="stat-tile"><IcoCoins size={20}/><div><StatNum value={totalClaimedUsd} format={fmtUSD}/><span className="lbl">Total claimed</span></div></div>
+              <div className="stat-tile accent"><IcoCheckCirc size={20}/><div><StatNum value={totalClaimableUsd} format={fmtUSD}/><span className="lbl">Claimable now</span></div></div>
+              <div className="stat-tile"><IcoTarget size={20}/><div><StatNum value={activeCount} format={v=>Math.round(v)}/><span className="lbl">Active positions</span></div></div>
+              <div className="stat-tile"><IcoFlask size={20}/><div><StatNum value={createdCount} format={v=>Math.round(v)}/><span className="lbl">Campaigns created</span></div></div>
             </div>
 
             {claimable.length>0 && (
@@ -1921,7 +1983,7 @@ function TopNav({route, go, theme, setTheme, user}){
 function App(){
   const [route,go] = useHashRoute();
   const user = useMockUser();
-  const [theme,setTheme] = useState(()=> localStorage.getItem('so_theme') || 'auto');
+  const [theme,setTheme] = useState(()=> localStorage.getItem('so_theme') || 'dark');
   const [toast,setToast] = useState(null);
   const notify = (m)=> setToast(m);
 
