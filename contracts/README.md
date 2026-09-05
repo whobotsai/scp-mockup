@@ -56,6 +56,31 @@ npm test        # compiles, then runs every test/*.test.js file
 Or separately: `npm run compile` (writes `build/*.json`), then
 `node test/sho.test.js` / `node test/sso.test.js` / `node test/registry.test.js`.
 
+## Deploying to a real network
+
+This build environment's network policy blocks the RPC endpoint too, so this has to run
+from a machine with normal network access.
+
+1. **Get testnet ETH.** Robinhood Chain Testnet (chain ID `46630`) —
+   [faucet](https://faucet.testnet.chain.robinhood.com/add-chain) for a wallet you control.
+   RPC: `https://rpc.testnet.chain.robinhood.com/rpc`. Explorer:
+   [explorer.testnet.chain.robinhood.com](https://explorer.testnet.chain.robinhood.com/).
+2. `cp .env.example .env` and fill in `RPC_URL` and `DEPLOYER_PRIVATE_KEY` (the funded
+   wallet's private key — never commit this file; it's gitignored).
+3. `npm run compile` (if you haven't already).
+4. `npm run deploy`
+
+This deploys `SHOFactory`, `SSOFactory`, and `Registry`, and writes their addresses to
+`deployments/<chainId>.json` (safe to commit — it's just addresses, not secrets). On a first
+testnet deploy there's no real keeper multi-sig, treasury, or Registration Service yet, so
+`owner`/`treasury`/`keeper`/`attestor` all default to the deployer's own address; rotate each
+one (`setOwner`/`setTreasury`/`setKeeper`/`setAttestor`) once those actually exist, and well
+before any mainnet deploy.
+
+To deploy the same thing to a different network later (including mainnet, chain ID `4663`,
+PRD.md's header), just point `.env` at that network's RPC and a funded key — nothing else
+about `scripts/deploy.js` changes.
+
 ## Engineering notes / deliberate deviations from the PRD's illustrative signatures
 
 - **`OpenZeppelin Contracts` is pinned to `5.0.2`, and compilation targets `evmVersion:

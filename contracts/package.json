@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "compile": "node scripts/compile.js",
-    "test": "node scripts/compile.js && node scripts/test-all.js"
+    "test": "node scripts/compile.js && node scripts/test-all.js",
+    "deploy": "node scripts/deploy.js"
   },
   "keywords": [],
   "author": "",
@@ -15,5 +16,9 @@
     "@openzeppelin/contracts": "5.0.2",
     "hardhat": "^2.29.1",
     "solc": "^0.8.24"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "ethers": "^6.17.0"
   }
 }
