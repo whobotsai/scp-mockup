@@ -160,10 +160,10 @@ root_submissions (
 ### 4.1 Chain Indexer (SHO)
 
 Subscribes to swap events on a token's Pons bonding-curve contract and, post-graduation, its
-Uniswap V4 pool (PRD §2.2). Per `BACKEND_ROADMAP.md`'s infra note, this runs against a
-self-hosted archive node rather than polling a third-party RPC for every swap — high-frequency
-event volume across many concurrent campaigns makes third-party rate limits and cost a real
-constraint, not a hypothetical one.
+Uniswap V4 pool (PRD §2.2), against an **Alchemy** archive endpoint rather than a generic
+public RPC — high-frequency event volume across many concurrent campaigns makes a plain
+public RPC's rate limits a real constraint, not a hypothetical one, and Alchemy's archive
+access covers the historical backfill case (§4.1 below) on the same endpoint.
 
 - Tracks one token per active SHO campaign (a token can have multiple concurrent campaigns,
   PRD §2.1 — the indexer subscribes once per token, not once per campaign, and the Volume
@@ -211,8 +211,10 @@ protocol-wide gates (account age ≥ 30 days, followers ≥ 25, PRD §12.5), the
 account's best 5 qualifying posts for that epoch (PRD §12.2).
 
 Rate limits are the operative constraint here, not compute — the X API's search/filtered-stream
-tier in use determines poll frequency; this is an infrastructure decision to make once a tier
-is chosen (see §7).
+tier in use determines poll frequency. Access is already arranged; the exact plan's rate
+limits still need to be read from the actual account once Stage 1 implementation starts, so
+the indexer's poll interval should be a config value tuned then, not a number hardcoded into
+this design ahead of time.
 
 ### 4.5 Leaderboard & Milestone/Epoch Engine
 
@@ -244,11 +246,11 @@ window (PRD §2.3 — this is what makes the challenge window meaningful; withou
 snapshot, "challenge window" would just mean "wait 24 hours," not "anyone can actually check
 the math"). Records the resulting CID in `snapshots.ipfs_cid`.
 
-**Open decision, not yet made (flagging per this design's own guiding principle — no new
-backend concept invented silently): which IPFS pinning provider.** Needs an account and an
-API key of its own once chosen — handled the same way every other credential in this project
-is: added directly via that provider's own dashboard/secrets store, never committed to the
-repo.
+**Provider: Lighthouse.storage** — Filecoin-backed permanent storage with a single API key
+and an S3-like upload flow, so a pin doesn't need a separately managed renewal/deal lifecycle
+the way a raw Filecoin storage deal would. Its API key is a credential like any other in this
+project — added directly via Lighthouse's own dashboard/secrets store once Stage 1
+implementation starts, never committed to the repo.
 
 ### 4.7 On-chain Poster + Keeper Multi-sig
 
@@ -316,16 +318,21 @@ retryable without redoing the (potentially expensive) snapshot computation above
 
 Consistent with the roadmap's own "no new backend concept that isn't already in the PRD"
 principle — these are infrastructure/vendor choices, not mechanism changes, and are called
-out rather than picked unilaterally:
+out rather than picked unilaterally. Resolved:
 
-- **IPFS pinning provider** (§4.6) — needs an account + API key before Stage 1 can actually
-  publish a snapshot anywhere real.
-- **X API tier** (§4.4) — determines Social Indexer poll frequency and cost; SSO can't index
-  anything real without this chosen first.
-- **Archive node provider** for the Chain Indexer (`BACKEND_ROADMAP.md`'s own infra note) —
-  self-hosted vs. a specific managed provider.
-- **On-call rotation** for the missed-root alert (§4.8) — a real person/team needs to own this
-  before Stage 1 can be considered actually monitored, not just instrumented.
+- **IPFS pinning provider** (§4.6) — **Lighthouse.storage.**
+- **X API tier** (§4.4) — access already arranged; the specific plan's rate limits get read
+  from the account and used to tune the Social Indexer's poll interval once Stage 1
+  implementation starts.
+- **Archive node provider** for the Chain Indexer (§4.1) — **Alchemy.**
+
+Still open:
+
+- **On-call rotation** for the missed-root alert (§4.8) — explicitly deferred by the team for
+  now. This does not block *building* the alerting logic in step 5 of §8 below, but the alert
+  has nowhere to page until a rotation exists — that gap needs to close before any campaign
+  with real funds goes live, and should be revisited at the latest during Stage 3 (security
+  hardening) sign-off.
 
 ## 8. Suggested build order within Stage 1
 
