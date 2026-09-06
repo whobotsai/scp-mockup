@@ -1,30 +1,39 @@
-# Keeper Service — Stage 1, build-order step 1
+# Keeper Service — Stage 1, build-order steps 1-2
 
-Implements the first slice of [`../docs/KEEPER_SERVICE_DESIGN.md`](../docs/KEEPER_SERVICE_DESIGN.md)'s
-suggested build order (§8): Chain Indexer (campaign discovery + trade indexing) plus the
-Volume Aggregator, exercised against the real testnet SHOFactory from
-[`../contracts/deployments/46630.json`](../contracts/deployments/46630.json).
+Implements the first two slices of [`../docs/KEEPER_SERVICE_DESIGN.md`](../docs/KEEPER_SERVICE_DESIGN.md)'s
+suggested build order (§8): Chain Indexer (campaign discovery + trade indexing), the Volume
+Aggregator, the Price/TWAP Oracle, and the Milestone Engine's crossing detection — exercised
+against the real testnet SHOFactory from
+[`../contracts/deployments/46630.json`](../contracts/deployments/46630.json). Root *posting*
+stays manual (step 2's own scope, see below) — everything upstream of that is automatic.
 
 ```
 src/
-  db.js                 Postgres access — campaigns, sho_trades, token_pools, indexer cursors
+  db.js                 Postgres access — campaigns, sho_trades, token_pools, snapshots, cursors
   campaignIndexer.js    Watches SHOFactory's CampaignCreated, populates `campaigns`
   tradeIndexer.js       Per-campaign trade indexing, dispatches by venue to a trade source
   volumeAggregator.js   Net-buy volume per wallet (PRD §2.2) — pure function + DB wrapper
+  priceSampler.js       Samples each pool's instantaneous price into sho_price_samples
+  twapOracle.js         Time-weighted average price over a real 30-minute window
+  rewardAllocator.js    Proportional reward split for a milestone's leaderboard
+  merkleTree.js         Direct port of contracts/test/helpers/merkle.js — see its own header
+  milestoneEngine.js    Checks every unreached milestone against the TWAP mcap each tick
   tradeSources/
     types.js             The normalized TradeEvent shape every adapter produces
     uniswapV2.js          Testnet venue — validated against a real deployed pool, see below
     uniswapV4.js          Mainnet venue — implemented, not yet validated, see caveats below
     ponsBondingCurve.js   NOT IMPLEMENTED, and deliberately not used for now — see below
   abis/sho.js           Minimal hand-picked ABI fragments (not the full contract interface)
-  index.js              Entry point: polling loop wiring the above together
+  index.js              Entry point: polling loop wiring all of the above together
 migrations/
   001_init.sql               Postgres schema (subset of the full design doc's data model)
   002_token_pools.sql         Per-token pool config (originally V4-only)
   003_multi_venue_pools.sql   Generalized 002 to carry either venue's config
+  004_snapshots.sql           Milestone Engine's frozen leaderboard snapshots
 scripts/
   register-token-pool.js     One-off: tell the indexer where a token's real pool lives
   fast-forward-cursor.js     One-off: skip a cursor past a backfill gap that's too slow to catch up
+  post-milestone-root.js     Posts a computed snapshot on-chain — the manual half of step 2
 ```
 
 ## Deliberate simplification: no Pons phase, self-deployed AMM on testnet
@@ -61,6 +70,24 @@ stays in the codebase, unused for now, ready for whenever mainnet is in scope.
 - **`tradeSources/uniswapV2.js`** is the venue actually proven above. It uses the
   transaction's own `from` (not the `Swap` event's `sender`, which would be a router's
   address in real-world usage) to correctly attribute trades to the real trader.
+- **Price/TWAP Oracle + Milestone Engine's crossing detection** (build-order step 2):
+  `priceSampler.js` samples each registered pool's price every tick; `twapOracle.js` computes
+  a genuine time-weighted average (not a naive mean) over the trailing 30 minutes;
+  `milestoneEngine.js` checks every one of a campaign's unreached milestones (PRD §2.3: tiers
+  unlock independently, not sequentially, so all of them are checked every tick) against
+  `twapPrice × live totalSupply()`. A crossing freezes a leaderboard snapshot
+  (`volumeAggregator.js`), allocates the milestone's reward proportionally
+  (`rewardAllocator.js`, exact BigInt math, no floating-point dust), builds the Merkle tree
+  (`merkleTree.js`), and stores it in `snapshots` — then prints the `post-milestone-root`
+  command to actually post it, which stays a manual step (see below). 27 unit tests across
+  the pure-logic pieces (TWAP weighting, proportional allocation, Merkle proof
+  self-consistency), all passing without needing live infrastructure.
+
+**A real constraint, not a shortcut:** a token's TWAP is `null` (not "insufficient but
+computed anyway") until there's at least 30 real minutes of price-sample history for it —
+same "real time has to actually pass" rule as the 24h challenge window elsewhere in this
+project. Register a pool, then leave the keeper running for at least half an hour before
+expecting a milestone to ever cross.
 
 ## Registering a token's pool
 
@@ -100,9 +127,13 @@ reference deployment address to confirm event decoding against.
 unlike `uniswapV2.js` above, this one hasn't had a real transaction run through it yet (no
 V4 deployment reachable from testnet). It's written against Uniswap V4 core's publicly
 documented `Swap` event and delta-sign convention — see the caveats at the top of that file.
-It also still treats the counter-asset amount as a direct USD proxy, which only holds if
-that asset is a stablecoin — real TWAP-based conversion is build-order step 2 (the
-Price/TWAP Oracle), not yet wired in for either venue.
+`priceSampler.js` also doesn't support it yet (Uniswap V2-only for now) — extending it to V4
+once there's a real pool to sample is the same shape of work as `tradeIndexer.js`'s existing
+venue dispatch.
+
+**Both venues still treat the counter-asset amount as a direct USD proxy** (in both trade
+indexing and price sampling), which only holds if that asset is a stablecoin — a real price
+feed for a non-stable counter asset is out of scope for this step.
 
 ## Running it
 
@@ -114,11 +145,19 @@ npm run migrate            # applies every migrations/*.sql file
 npm start                  # polls for campaigns + trades + logs volume aggregator output
 ```
 
-`npm test` runs the Volume Aggregator's and `uniswapV2.js`'s unit tests (12 total, no
-`.env`/DB/RPC needed) — this is what's actually verifiable without live infrastructure.
+`npm test` runs every pure-logic unit test (27 total, no `.env`/DB/RPC needed) — this is what's
+actually verifiable without live infrastructure.
 
 To set up a full test loop yourself (token, pool, campaign, trade), see
-`../contracts/README.md`'s "Deploying a test token + pool" section.
+`../contracts/README.md`'s "Deploying a test token + pool" section. Once a milestone crosses
+(after the ~30-minute wait above), post it on-chain:
+
+```bash
+npm run post-milestone-root -- <campaignAddress> <milestoneIndex>
+```
+
+This needs `KEEPER_PRIVATE_KEY` in `.env` — the wallet SHOFactory's `keeper()` points at (see
+`.env.example`'s comment; currently the Stage 0 deployer placeholder).
 
 ### If a backfill is taking a very long time
 

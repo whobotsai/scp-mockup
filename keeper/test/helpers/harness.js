@@ -17,9 +17,16 @@ function test(name, fn) {
   }
 }
 
+// BigInt has no native JSON representation -- stringify it explicitly (as "123n") rather
+// than letting JSON.stringify throw, since several modules here (rewardAllocator.js) return
+// BigInt amounts by design (on-chain uint256 precision, not float).
+function stringify(value) {
+  return JSON.stringify(value, (_key, v) => (typeof v === "bigint" ? `${v}n` : v));
+}
+
 function assertEqual(actual, expected, msg) {
-  const a = JSON.stringify(actual);
-  const e = JSON.stringify(expected);
+  const a = stringify(actual);
+  const e = stringify(expected);
   if (a !== e) throw new Error(msg || `expected ${e}, got ${a}`);
 }
 

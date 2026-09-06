@@ -87,6 +87,41 @@ async function upsertTokenPool(token, cfg) {
   );
 }
 
+async function insertPriceSample(token, venue, priceUsd, sampledAt) {
+  await pool.query(
+    "INSERT INTO sho_price_samples (token, venue, price_usd, sampled_at) VALUES ($1,$2,$3,$4)",
+    [token, venue, priceUsd, sampledAt]
+  );
+}
+
+async function priceSamplesSince(token, sinceTime) {
+  const { rows } = await pool.query(
+    "SELECT price_usd, sampled_at FROM sho_price_samples WHERE token = $1 AND sampled_at >= $2",
+    [token, sinceTime]
+  );
+  return rows;
+}
+
+async function getSnapshot(campaignAddress, index) {
+  const { rows } = await pool.query(
+    'SELECT * FROM snapshots WHERE campaign_address = $1 AND "index" = $2',
+    [campaignAddress, index]
+  );
+  return rows[0] || null;
+}
+
+/// s.entries: [{account, amount}] with amount as a decimal string (BigInt.toString()) --
+/// jsonb doesn't distinguish int from string, so storing it as a string here avoids any
+/// precision loss round-tripping a uint256-scale number through JSON.
+async function insertSnapshot(s) {
+  await pool.query(
+    `INSERT INTO snapshots (campaign_address, "index", merkle_root, snapshot_hash, entries, status)
+     VALUES ($1,$2,$3,$4,$5,'computed')
+     ON CONFLICT (campaign_address, "index") DO NOTHING`,
+    [s.campaignAddress, s.index, s.merkleRoot, s.snapshotHash, JSON.stringify(s.entries)]
+  );
+}
+
 module.exports = {
   pool,
   getCursor,
@@ -97,4 +132,8 @@ module.exports = {
   tradesForWallet,
   getTokenPool,
   upsertTokenPool,
+  insertPriceSample,
+  priceSamplesSince,
+  getSnapshot,
+  insertSnapshot,
 };
