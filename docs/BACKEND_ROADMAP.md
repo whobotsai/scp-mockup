@@ -74,10 +74,14 @@ equivalent the team already knows.
 > confirmed on-chain, zero contract changes needed. The Registration Service
 > (`../registration-service/`) is built — X OAuth 2.0 (PKCE) plus attestation signing, the
 > attestation logic unit-tested against the exact digest already proven correct by
-> `Registry`'s own test suite. **Caveat:** the OAuth round-trip against X's live API hasn't
-> been completed from this codebase's dev environment yet (no network access to run an
-> interactive consent flow from the sandbox that built it) — try it end-to-end from a machine
-> with normal network access and a real X Developer App before considering this fully done.
+> `Registry`'s own test suite. **Deliberately paused here:** verifying the OAuth round-trip
+> against X's live API needs a callback URL X will actually accept (it rejects plain
+> `http://localhost`, confirmed in practice against a real X Developer App — HTTPS only,
+> no bare-localhost exception observed), which means either an HTTPS tunnel (ngrok et al.)
+> just for this dev loop, or the real domain Stage 2's frontend integration will already
+> need. Decided to wait for the latter rather than fight tunnel setup now — the code and its
+> unit tests aren't blocked either way, only the live end-to-end check is. Revisit this
+> alongside Stage 2's frontend integration work.
 
 **Contracts workstream:**
 - `SHOFactory.sol` / `SHOCampaign.sol` per PRD §4.1–§4.3: `createCampaign`, `postMilestoneRoot`,
