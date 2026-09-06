@@ -1,0 +1,19 @@
+{
+  "name": "keeper",
+  "version": "0.1.0",
+  "description": "Strong Commitment Protocol keeper service (Stage 1) — see ../docs/KEEPER_SERVICE_DESIGN.md",
+  "main": "src/index.js",
+  "scripts": {
+    "migrate": "node scripts/migrate.js",
+    "start": "node src/index.js",
+    "test": "node test/volumeAggregator.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "ethers": "^6.17.0",
+    "pg": "^8.13.1"
+  }
+}
