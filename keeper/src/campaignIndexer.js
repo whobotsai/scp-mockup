@@ -8,7 +8,10 @@ const { SHO_FACTORY_ABI, SHO_CAMPAIGN_ABI, WINDOW_SECONDS } = require("./abis/sh
 const db = require("./db");
 
 const CURSOR_KEY = "campaign_indexer";
-const MAX_BLOCK_RANGE = 2000n; // getLogs range cap some RPC providers enforce; chunk around it
+// getLogs block-range cap — RPC-provider dependent, not a chain limit. Alchemy's free tier
+// enforces a 10-block max per eth_getLogs call (a paid plan raises this); default here is
+// sized for that free tier and can be widened via .env once/if the plan changes.
+const MAX_BLOCK_RANGE = BigInt(process.env.GET_LOGS_MAX_BLOCK_RANGE || 9);
 
 async function pollNewCampaigns(provider, factoryAddress, deployBlock) {
   const factory = new ethers.Contract(factoryAddress, SHO_FACTORY_ABI, provider);
