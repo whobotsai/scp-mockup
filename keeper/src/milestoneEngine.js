@@ -33,6 +33,11 @@ async function checkMilestones(provider, campaign) {
   const totalSupply = await tokenContract.totalSupply();
   const circulatingMcap = twapPrice * Number(ethers.formatUnits(totalSupply, 18));
 
+  // Logged every tick once TWAP is valid, even when nothing crosses below -- otherwise this
+  // module goes completely silent for a campaign sitting under every threshold, which reads
+  // indistinguishably from a crash on the terminal.
+  console.log(`[milestoneEngine] ${campaign.campaign_address}: TWAP mcap $${circulatingMcap.toFixed(2)}`);
+
   const campaignContract = new ethers.Contract(campaign.campaign_address, SHO_CAMPAIGN_ABI, provider);
   const milestoneCount = Number(await campaignContract.milestoneCount());
   const totalLocked = await campaignContract.totalLocked();
