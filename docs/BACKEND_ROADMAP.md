@@ -65,12 +65,15 @@ equivalent the team already knows.
 
 ### Stage 0 — Foundations (contracts + registration in parallel)
 
-> **Progress:** `SHOFactory`/`SHOCampaign`, `SSOFactory`/`SSOCampaign`, and `Registry` are
-> written and covered by 33 passing tests against a local simulated chain — see
-> `../contracts/`. **Not yet done:** public testnet deployment (needs a chosen testnet, an
-> RPC endpoint, and a funded deployer key — infrastructure decisions, not something to pick
-> unilaterally) and the Registration Service's actual OAuth backend (only the on-chain
-> attestation-verification side exists so far).
+> **Progress: contracts workstream done.** `SHOFactory`/`SHOCampaign`, `SSOFactory`/
+> `SSOCampaign`, and `Registry` are written, covered by 33 passing tests against a local
+> simulated chain, and deployed to Robinhood Chain Testnet (chainId 46630 — see
+> `../contracts/deployments/46630.json`). The exit criteria's manual walkthrough
+> (`../contracts/scripts/test/*.js`) has been run for real: a SHO campaign was created,
+> its milestone root posted, the 24h challenge window elapsed, and the reward claimed —
+> confirmed on-chain, zero contract changes needed. **Not yet done:** the Registration
+> Service's actual OAuth backend (only the on-chain attestation-verification side exists so
+> far) — this is the one remaining Stage 0 item, and it's independent of everything above.
 
 **Contracts workstream:**
 - `SHOFactory.sol` / `SHOCampaign.sol` per PRD §4.1–§4.3: `createCampaign`, `postMilestoneRoot`,
