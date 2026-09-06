@@ -7,6 +7,7 @@
     "migrate": "node scripts/migrate.js",
     "seed-known-campaign": "node scripts/seed-known-campaign.js",
     "register-token-pool": "node scripts/register-token-pool.js",
+    "fast-forward-cursor": "node scripts/fast-forward-cursor.js",
     "start": "node src/index.js",
     "test": "node test/volumeAggregator.test.js && node test/uniswapV2.test.js"
   },
