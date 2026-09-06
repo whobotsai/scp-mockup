@@ -12,8 +12,12 @@
 const { ethers } = require("ethers");
 const db = require("./db");
 
+// Our own UniswapV2Pair mock (contracts/src/mocks/UniswapV2Pair.sol) deliberately returns only
+// (reserve0, reserve1) -- it skips real Uniswap V2's third blockTimestampLast return value,
+// which nothing in this project needs. Keep this ABI fragment matching that 2-value signature,
+// not the real Uniswap V2 pair's 3-value one, or ethers fails to decode the result entirely.
 const PAIR_ABI = [
-  "function getReserves() view returns (uint112, uint112, uint32)",
+  "function getReserves() view returns (uint112, uint112)",
 ];
 
 async function samplePrice(provider, token, poolConfig) {
