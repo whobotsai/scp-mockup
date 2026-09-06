@@ -13,7 +13,8 @@
     "set-attestor": "node scripts/set-attestor.js",
     "deploy-test-token": "node scripts/deploy-test-token.js",
     "setup-test-pool": "node scripts/setup-test-pool.js",
-    "test-swap": "node scripts/test-swap.js"
+    "test-swap": "node scripts/test-swap.js",
+    "create-campaign-with-token": "node scripts/create-campaign-with-token.js"
   },
   "keywords": [],
   "author": "",
