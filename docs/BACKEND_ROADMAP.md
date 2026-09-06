@@ -121,6 +121,13 @@ manually walked through milestone-reached / claim by hand (no automated keeper y
 > [`../keeper/README.md`](../keeper/README.md) for the full reasoning and how to register a
 > token's real pool. Temporary, for testing/development — revisit Pons once its ABI is
 > actually available.
+>
+> **Validated end-to-end with real data:** a real test token, a real self-deployed Uniswap V2
+> pool, a real SHO campaign, and two real swaps (one sell, one buy) produced exactly the
+> predicted net-buy figure after correctly excluding the net-sell trade — confirming
+> campaign discovery, trade indexing, buy/sell classification, and volume aggregation all
+> work correctly against actual on-chain transactions, not just the 12 passing offline unit
+> tests. See `../keeper/README.md`'s "What actually works right now" for the numbers.
 
 - Chain indexer against the testnet deployment: subscribe to the campaigning token's Pons
   bonding-curve contract and (post-graduation) its Uniswap V4 pool (PRD §3.2).
