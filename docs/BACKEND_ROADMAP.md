@@ -109,6 +109,14 @@ manually walked through milestone-reached / claim by hand (no automated keeper y
 > module breakdown, data model, job/queue architecture, and open infra decisions (IPFS
 > pinning provider, X API tier, archive node provider, on-call rotation) this stage needs
 > before it can actually run.
+>
+> **Deliberate simplification in progress:** the Chain Indexer is wired to Uniswap V4 only
+> for now, skipping the Pons.family bonding-curve phase below entirely — Pons's contract ABI
+> still isn't available, and rather than stay blocked on it, every token this keeper tracks
+> is assumed to launch straight onto a Uniswap V4 pool. See
+> [`../keeper/README.md`](../keeper/README.md) for the reasoning and how to register a
+> token's real pool once it exists. Temporary, for testing/development — revisit once Pons's
+> ABI is actually available.
 
 - Chain indexer against the testnet deployment: subscribe to the campaigning token's Pons
   bonding-curve contract and (post-graduation) its Uniswap V4 pool (PRD §3.2).
