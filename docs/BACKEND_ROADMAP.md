@@ -65,15 +65,19 @@ equivalent the team already knows.
 
 ### Stage 0 — Foundations (contracts + registration in parallel)
 
-> **Progress: contracts workstream done.** `SHOFactory`/`SHOCampaign`, `SSOFactory`/
-> `SSOCampaign`, and `Registry` are written, covered by 33 passing tests against a local
-> simulated chain, and deployed to Robinhood Chain Testnet (chainId 46630 — see
+> **Progress: Stage 0 done.** `SHOFactory`/`SHOCampaign`, `SSOFactory`/`SSOCampaign`, and
+> `Registry` are written, covered by 33 passing tests against a local simulated chain, and
+> deployed to Robinhood Chain Testnet (chainId 46630 — see
 > `../contracts/deployments/46630.json`). The exit criteria's manual walkthrough
 > (`../contracts/scripts/test/*.js`) has been run for real: a SHO campaign was created,
 > its milestone root posted, the 24h challenge window elapsed, and the reward claimed —
-> confirmed on-chain, zero contract changes needed. **Not yet done:** the Registration
-> Service's actual OAuth backend (only the on-chain attestation-verification side exists so
-> far) — this is the one remaining Stage 0 item, and it's independent of everything above.
+> confirmed on-chain, zero contract changes needed. The Registration Service
+> (`../registration-service/`) is built — X OAuth 2.0 (PKCE) plus attestation signing, the
+> attestation logic unit-tested against the exact digest already proven correct by
+> `Registry`'s own test suite. **Caveat:** the OAuth round-trip against X's live API hasn't
+> been completed from this codebase's dev environment yet (no network access to run an
+> interactive consent flow from the sandbox that built it) — try it end-to-end from a machine
+> with normal network access and a real X Developer App before considering this fully done.
 
 **Contracts workstream:**
 - `SHOFactory.sol` / `SHOCampaign.sol` per PRD §4.1–§4.3: `createCampaign`, `postMilestoneRoot`,
