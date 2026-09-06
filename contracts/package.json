@@ -11,7 +11,9 @@
     "test:campaign:post-root": "node scripts/test/02-post-root.js",
     "test:campaign:claim": "node scripts/test/03-claim.js",
     "set-attestor": "node scripts/set-attestor.js",
-    "deploy-test-token": "node scripts/deploy-test-token.js"
+    "deploy-test-token": "node scripts/deploy-test-token.js",
+    "setup-test-pool": "node scripts/setup-test-pool.js",
+    "test-swap": "node scripts/test-swap.js"
   },
   "keywords": [],
   "author": "",

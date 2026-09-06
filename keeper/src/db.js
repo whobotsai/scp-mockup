@@ -60,15 +60,30 @@ async function getTokenPool(token) {
   return rows[0] || null;
 }
 
+/// cfg.venue: 'uniswap_v2' | 'uniswap_v4'. Venue-specific fields for the other venue are
+/// simply left null -- see migrations/003_multi_venue_pools.sql.
 async function upsertTokenPool(token, cfg) {
   await pool.query(
-    `INSERT INTO token_pools (token, pool_manager_address, pool_id, campaign_token_is_currency0)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO token_pools
+       (token, venue, pair_address, campaign_token_is_token0,
+        pool_manager_address, pool_id, campaign_token_is_currency0)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)
      ON CONFLICT (token) DO UPDATE SET
+       venue = EXCLUDED.venue,
+       pair_address = EXCLUDED.pair_address,
+       campaign_token_is_token0 = EXCLUDED.campaign_token_is_token0,
        pool_manager_address = EXCLUDED.pool_manager_address,
        pool_id = EXCLUDED.pool_id,
        campaign_token_is_currency0 = EXCLUDED.campaign_token_is_currency0`,
-    [token, cfg.poolManagerAddress, cfg.poolId, cfg.campaignTokenIsCurrency0]
+    [
+      token,
+      cfg.venue,
+      cfg.pairAddress ?? null,
+      cfg.campaignTokenIsToken0 ?? null,
+      cfg.poolManagerAddress ?? null,
+      cfg.poolId ?? null,
+      cfg.campaignTokenIsCurrency0 ?? null,
+    ]
   );
 }
 

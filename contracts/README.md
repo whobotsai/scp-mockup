@@ -21,6 +21,8 @@ src/
     Registry.sol          Wallet <-> X handle linking (PRD §12.3-12.4)
   mocks/
     MockERC20.sol         Test-only stand-in for a reward token; never deployed for real
+    UniswapV2Factory.sol  Minimal Uniswap-V2-style factory, for testnet AMM indexing fixtures
+    UniswapV2Pair.sol     Minimal constant-product pair — see its file header for caveats
 ```
 
 **Status:** unaudited, not deployed anywhere. This is Stage 0 of the backend roadmap —
@@ -81,20 +83,41 @@ To deploy the same thing to a different network later (including mainnet, chain 
 PRD.md's header), just point `.env` at that network's RPC and a funded key — nothing else
 about `scripts/deploy.js` changes.
 
-## Deploying a test token
+## Deploying a test token + pool, for the keeper to actually index something
 
-`../keeper/`'s Chain Indexer needs a real token with a real Uniswap V4 pool to index anything
-(see `../keeper/README.md`'s "Deliberate simplification" section). `MockERC20` (test-only,
-never part of the real protocol) stands in for a real campaigning token here:
+`../keeper/`'s Chain Indexer needs a real token with a real pool to index anything (see
+`../keeper/README.md`'s "Deliberate simplification" section) — Uniswap V4 confirmed *not*
+deployed on Robinhood Chain Testnet (mainnet only), so this uses a self-deployed
+Uniswap-V2-style pool instead (`src/mocks/UniswapV2Factory.sol`/`UniswapV2Pair.sol`).
 
-```bash
-npm run deploy-test-token -- "My Test Token" MTT 1000000
-```
+1. **Deploy two tokens** — one to act as the campaigning token, one as its quote/counter
+   asset (a real pool needs a pair, not just one token):
+   ```bash
+   npm run deploy-test-token -- "My Test Token" MTT 1000000
+   npm run deploy-test-token -- "Mock USD" MUSD 1000000
+   ```
+   Each overwrites `deployments/test-token.json` — note down both addresses as they print
+   (or read the file between the two runs).
 
-Args are name, symbol, and initial supply minted to the deployer (all optional, shown are the
-defaults). Saves the address to `deployments/test-token.json`. After this, create the token's
-Uniswap V4 pool yourself, then register it with the keeper:
-`cd ../keeper && npm run register-token-pool -- <address> <poolManagerAddress> <poolId> <true|false>`.
+2. **Create the pair and add initial liquidity** (idempotent — safe to re-run):
+   ```bash
+   npm run setup-test-pool -- <campaignTokenAddress> <quoteTokenAddress>
+   ```
+   Deploys `UniswapV2Factory` once (address saved to `deployments/<chainId>.json`), creates
+   the pair, and seeds it with 1000/1000 of each token (override with two more args). Prints
+   the pair address and the exact `register-token-pool` command to run next.
+
+3. **Register the pool with the keeper** (command printed by step 2):
+   ```bash
+   cd ../keeper && npm run register-token-pool -- <campaignTokenAddress> uniswap_v2 <pairAddress> <true|false>
+   ```
+
+4. **Generate a trade** for the keeper to actually pick up:
+   ```bash
+   npm run test-swap -- <pairAddress> <campaignTokenAddress> 10
+   ```
+   Run this again (any amount) whenever you want to simulate more trading activity — each
+   call is one real on-chain swap, one real `Swap` event for the Chain Indexer to index.
 
 ## Manual end-to-end test on testnet
 

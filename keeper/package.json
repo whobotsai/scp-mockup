@@ -8,7 +8,7 @@
     "seed-known-campaign": "node scripts/seed-known-campaign.js",
     "register-token-pool": "node scripts/register-token-pool.js",
     "start": "node src/index.js",
-    "test": "node test/volumeAggregator.test.js"
+    "test": "node test/volumeAggregator.test.js && node test/uniswapV2.test.js"
   },
   "keywords": [],
   "author": "",

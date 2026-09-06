@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS sho_trades (
   tx_hash           text NOT NULL,
   log_index         int NOT NULL,
   wallet            text NOT NULL,
-  venue             text NOT NULL,             -- 'uniswap_v2' | 'pons_bonding_curve'
+  venue             text NOT NULL,             -- 'uniswap_v2' | 'uniswap_v4' | 'pons_bonding_curve'
   side              text NOT NULL,             -- 'buy' | 'sell'
   usd_value         numeric NOT NULL,
   block_number      bigint NOT NULL,

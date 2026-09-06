@@ -1,10 +1,13 @@
 // Trade-indexing half of the Chain Indexer (KEEPER_SERVICE_DESIGN.md section 4.1), wired to
-// tradeSources/uniswapV4.js. Deliberately Uniswap-V4-only for now -- no Pons.family
-// bonding-curve phase (see tradeSources/ponsBondingCurve.js for why) -- so a token with no
-// registered pool config (scripts/register-token-pool.js) simply has nothing indexed yet,
-// not an error.
+// tradeSources/uniswapV2.js (testnet -- see ../README.md's "Deliberate simplification"
+// section for why: Uniswap V4 isn't deployed on Robinhood Chain Testnet at all, confirmed in
+// practice, only on mainnet) and tradeSources/uniswapV4.js (kept ready for whenever mainnet
+// is in scope). No Pons.family bonding-curve phase (see tradeSources/ponsBondingCurve.js for
+// why) -- a token with no registered pool config (scripts/register-token-pool.js) simply has
+// nothing indexed yet, not an error.
 "use strict";
-const { fetchTrades } = require("./tradeSources/uniswapV4");
+const uniswapV2 = require("./tradeSources/uniswapV2");
+const uniswapV4 = require("./tradeSources/uniswapV4");
 const db = require("./db");
 
 const MAX_BLOCK_RANGE = BigInt(process.env.GET_LOGS_MAX_BLOCK_RANGE || 9);
@@ -34,13 +37,26 @@ async function pollTradesForCampaign(provider, campaign) {
   while (fromBlock <= latest) {
     const toBlock = fromBlock + MAX_BLOCK_RANGE < latest ? fromBlock + MAX_BLOCK_RANGE : latest;
 
-    const trades = await fetchTrades(provider, {
-      fromBlock,
-      toBlock,
-      poolManagerAddress: poolConfig.pool_manager_address,
-      poolId: poolConfig.pool_id,
-      campaignTokenIsCurrency0: poolConfig.campaign_token_is_currency0,
-    });
+    let trades;
+    if (poolConfig.venue === "uniswap_v2") {
+      trades = await uniswapV2.fetchTrades(provider, {
+        fromBlock,
+        toBlock,
+        pairAddress: poolConfig.pair_address,
+        campaignTokenIsToken0: poolConfig.campaign_token_is_token0,
+      });
+    } else if (poolConfig.venue === "uniswap_v4") {
+      trades = await uniswapV4.fetchTrades(provider, {
+        fromBlock,
+        toBlock,
+        poolManagerAddress: poolConfig.pool_manager_address,
+        poolId: poolConfig.pool_id,
+        campaignTokenIsCurrency0: poolConfig.campaign_token_is_currency0,
+      });
+    } else {
+      console.warn(`[tradeIndexer] unknown venue "${poolConfig.venue}" for token ${campaign.token} -- skipping`);
+      return;
+    }
 
     for (const t of trades) {
       await db.insertTrade({
@@ -48,7 +64,7 @@ async function pollTradesForCampaign(provider, campaign) {
         txHash: t.txHash,
         logIndex: t.logIndex,
         wallet: t.wallet,
-        venue: "uniswap_v4",
+        venue: poolConfig.venue,
         side: t.side,
         usdValue: t.usdValue,
         blockNumber: t.blockNumber,
