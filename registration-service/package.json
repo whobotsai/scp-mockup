@@ -1,0 +1,20 @@
+{
+  "name": "registration-service",
+  "version": "0.1.0",
+  "description": "Strong Commitment Protocol Registration Service (Stage 0's last item) -- X OAuth 2.0 (PKCE) + wallet<->handle attestation signing for Registry.registerHandle",
+  "main": "src/server.js",
+  "scripts": {
+    "migrate": "node scripts/migrate.js",
+    "start": "node src/server.js",
+    "test": "node test/attestation.test.js && node test/pkce.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "ethers": "^6.17.0",
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  }
+}

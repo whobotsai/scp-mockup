@@ -1,0 +1,18 @@
+# Local Postgres for development only. Matches .env.example's DATABASE_URL defaults.
+# Uses host port 5433 (not 5432) so this can run alongside ../keeper's own Postgres
+# container at the same time without a port clash.
+# Run: docker compose up -d
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: registration
+      POSTGRES_PASSWORD: registration
+      POSTGRES_DB: registration
+    ports:
+      - "5433:5432"
+    volumes:
+      - registration-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  registration-postgres-data:

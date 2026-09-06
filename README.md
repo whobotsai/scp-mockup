@@ -24,6 +24,7 @@ docs/BACKEND_ROADMAP.md      Engineering roadmap for building the real backend
 docs/KEEPER_SERVICE_DESIGN.md  Stage 1 keeper service technical design
 contracts/                  Smart contracts (SHO/SSO factories and campaigns, Registry)
 keeper/                      Keeper service (Stage 1) — see keeper/README.md for current status
+registration-service/        Registration Service (Stage 0's last item) — see its README.md
 firebase.json               Firebase Hosting config
 .firebaserc                 Firebase project binding (set your project ID here)
 ```
