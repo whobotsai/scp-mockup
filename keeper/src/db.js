@@ -55,4 +55,31 @@ async function tradesForWallet(campaignAddress, sinceTime) {
   return rows;
 }
 
-module.exports = { pool, getCursor, setCursor, upsertCampaign, listCampaigns, insertTrade, tradesForWallet };
+async function getTokenPool(token) {
+  const { rows } = await pool.query("SELECT * FROM token_pools WHERE token = $1", [token]);
+  return rows[0] || null;
+}
+
+async function upsertTokenPool(token, cfg) {
+  await pool.query(
+    `INSERT INTO token_pools (token, pool_manager_address, pool_id, campaign_token_is_currency0)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (token) DO UPDATE SET
+       pool_manager_address = EXCLUDED.pool_manager_address,
+       pool_id = EXCLUDED.pool_id,
+       campaign_token_is_currency0 = EXCLUDED.campaign_token_is_currency0`,
+    [token, cfg.poolManagerAddress, cfg.poolId, cfg.campaignTokenIsCurrency0]
+  );
+}
+
+module.exports = {
+  pool,
+  getCursor,
+  setCursor,
+  upsertCampaign,
+  listCampaigns,
+  insertTrade,
+  tradesForWallet,
+  getTokenPool,
+  upsertTokenPool,
+};
