@@ -122,12 +122,22 @@ manually walked through milestone-reached / claim by hand (no automated keeper y
 > token's real pool. Temporary, for testing/development — revisit Pons once its ABI is
 > actually available.
 >
-> **Validated end-to-end with real data:** a real test token, a real self-deployed Uniswap V2
-> pool, a real SHO campaign, and two real swaps (one sell, one buy) produced exactly the
-> predicted net-buy figure after correctly excluding the net-sell trade — confirming
-> campaign discovery, trade indexing, buy/sell classification, and volume aggregation all
-> work correctly against actual on-chain transactions, not just the 12 passing offline unit
-> tests. See `../keeper/README.md`'s "What actually works right now" for the numbers.
+> **Build-order step 1 validated end-to-end with real data:** a real test token, a real
+> self-deployed Uniswap V2 pool, a real SHO campaign, and two real swaps (one sell, one buy)
+> produced exactly the predicted net-buy figure after correctly excluding the net-sell trade
+> — confirming campaign discovery, trade indexing, buy/sell classification, and volume
+> aggregation all work correctly against actual on-chain transactions. See
+> `../keeper/README.md`'s "What actually works right now" for the numbers.
+>
+> **Build-order step 2 built:** the Price/TWAP Oracle (a genuine time-weighted average, not a
+> naive mean, over a real 30-minute window) and the Milestone Engine's crossing detection
+> (every unreached milestone checked every tick, per PRD §2.3's "tiers unlock independently")
+> now run automatically — a crossing freezes a leaderboard snapshot, allocates the reward
+> proportionally, and builds the Merkle tree. Root *posting* stays manual (this step's own
+> scope, per the design doc's build order) via `keeper/scripts/post-milestone-root.js`. 27
+> unit tests total for the pure-logic pieces. **Not yet exercised against a real crossing on
+> testnet** — that needs the keeper running continuously for a real 30 minutes after a pool
+> is registered (see `../keeper/README.md`) before a TWAP is even valid, let alone crossed.
 
 - Chain indexer against the testnet deployment: subscribe to the campaigning token's Pons
   bonding-curve contract and (post-graduation) its Uniswap V4 pool (PRD §3.2).
