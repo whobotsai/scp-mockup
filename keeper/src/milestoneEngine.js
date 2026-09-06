@@ -42,24 +42,18 @@ async function checkMilestones(provider, campaign) {
   const milestoneCount = Number(await campaignContract.milestoneCount());
   const totalLocked = await campaignContract.totalLocked();
 
-  // Temporary diagnostic: the CROSSED branch below isn't firing on a campaign whose TWAP mcap
-  // is well past its only milestone's threshold -- this pins down whether milestoneCount/
-  // totalLocked read as expected, or whether the per-milestone tier/reached checks below are
-  // silently skipping every iteration. Remove once that's root-caused.
-  console.log(`[milestoneEngine] ${campaign.campaign_address}: milestoneCount=${milestoneCount} totalLocked=${totalLocked.toString()}`);
-
   for (let i = 0; i < milestoneCount; i++) {
     const milestone = await campaignContract.getMilestone(i);
-    const threshold = MILESTONE_USD_THRESHOLDS[Number(milestone.tier)];
-    console.log(
-      `[milestoneEngine] ${campaign.campaign_address} milestone ${i}: tier=${milestone.tier} ` +
-        `reached=${milestone.reached} threshold=${threshold}`
-    );
     if (milestone.reached) continue; // already finalized on-chain, nothing to do here
 
     const existing = await db.getSnapshot(campaign.campaign_address, i);
-    if (existing) continue; // already computed (and printed) this tier's snapshot
+    if (existing) continue; // already computed (and printed) this tier's snapshot -- this is
+    // also why a crossing can go quiet on the terminal right after it happens: once a
+    // snapshot's stored, every later tick skips straight past this milestone with no log at
+    // all, so check scripts/post-milestone-root.js's own "no computed snapshot found" error
+    // (or the snapshots table directly) rather than assuming a silent milestone never crossed.
 
+    const threshold = MILESTONE_USD_THRESHOLDS[Number(milestone.tier)];
     if (circulatingMcap < threshold) continue; // not crossed yet
 
     console.log(

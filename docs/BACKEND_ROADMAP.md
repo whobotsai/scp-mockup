@@ -129,15 +129,21 @@ manually walked through milestone-reached / claim by hand (no automated keeper y
 > aggregation all work correctly against actual on-chain transactions. See
 > `../keeper/README.md`'s "What actually works right now" for the numbers.
 >
-> **Build-order step 2 built:** the Price/TWAP Oracle (a genuine time-weighted average, not a
-> naive mean, over a real 30-minute window) and the Milestone Engine's crossing detection
-> (every unreached milestone checked every tick, per PRD §2.3's "tiers unlock independently")
-> now run automatically — a crossing freezes a leaderboard snapshot, allocates the reward
-> proportionally, and builds the Merkle tree. Root *posting* stays manual (this step's own
-> scope, per the design doc's build order) via `keeper/scripts/post-milestone-root.js`. 27
-> unit tests total for the pure-logic pieces. **Not yet exercised against a real crossing on
-> testnet** — that needs the keeper running continuously for a real 30 minutes after a pool
-> is registered (see `../keeper/README.md`) before a TWAP is even valid, let alone crossed.
+> **Build-order step 2 validated end-to-end with real data.** The Price/TWAP Oracle (a genuine
+> time-weighted average, not a naive mean, over a real 30-minute window) and the Milestone
+> Engine's crossing detection (every unreached milestone checked every tick, per PRD §2.3's
+> "tiers unlock independently") now run automatically — a crossing freezes a leaderboard
+> snapshot, allocates the reward proportionally, and builds the Merkle tree. Root *posting*
+> stays manual (this step's own scope, per the design doc's build order) via
+> `keeper/scripts/post-milestone-root.js`. 27 unit tests total for the pure-logic pieces.
+> Two integration bugs surfaced and were fixed once this ran live for the first time (an ABI
+> mismatch against the mock pool's actual `getReserves()` signature, and a missing migration
+> for the price-samples table — see `../keeper/README.md`'s git history for both). After a
+> real 30-minute keeper runtime with a registered pool, the tracked test campaign's TWAP
+> market cap (~$1.08M) crossed its $100K milestone, a leaderboard snapshot was computed and
+> stored, and `post-milestone-root.js` posted the root on-chain successfully — the 24h
+> challenge window is now running for that milestone. Confirms the full automatic-scoring
+> half of this step against real on-chain data, not just the offline unit tests.
 
 - Chain indexer against the testnet deployment: subscribe to the campaigning token's Pons
   bonding-curve contract and (post-graduation) its Uniswap V4 pool (PRD §3.2).

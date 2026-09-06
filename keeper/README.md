@@ -81,13 +81,20 @@ stays in the codebase, unused for now, ready for whenever mainnet is in scope.
   (`merkleTree.js`), and stores it in `snapshots` — then prints the `post-milestone-root`
   command to actually post it, which stays a manual step (see below). 27 unit tests across
   the pure-logic pieces (TWAP weighting, proportional allocation, Merkle proof
-  self-consistency), all passing without needing live infrastructure.
+  self-consistency), all passing without needing live infrastructure. **Validated live**: the
+  tracked test campaign's TWAP market cap crossed its $100K milestone after a real 30-minute
+  keeper runtime, a snapshot was computed and stored, and `post-milestone-root.js` posted the
+  root on-chain successfully.
 
 **A real constraint, not a shortcut:** a token's TWAP is `null` (not "insufficient but
 computed anyway") until there's at least 30 real minutes of price-sample history for it —
 same "real time has to actually pass" rule as the 24h challenge window elsewhere in this
 project. Register a pool, then leave the keeper running for at least half an hour before
-expecting a milestone to ever cross.
+expecting a milestone to ever cross. **A crossing can go quiet on the terminal right after it
+happens** — once a milestone's snapshot is stored, every later tick skips it with no log at
+all (see `milestoneEngine.js`'s own comment on this), so don't take silence as proof nothing
+crossed; try `post-milestone-root.js` (it errors clearly if there's really no snapshot yet) or
+check the `snapshots` table directly.
 
 ## Registering a token's pool
 
