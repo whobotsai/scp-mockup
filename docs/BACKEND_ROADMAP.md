@@ -110,13 +110,17 @@ manually walked through milestone-reached / claim by hand (no automated keeper y
 > pinning provider, X API tier, archive node provider, on-call rotation) this stage needs
 > before it can actually run.
 >
-> **Deliberate simplification in progress:** the Chain Indexer is wired to Uniswap V4 only
-> for now, skipping the Pons.family bonding-curve phase below entirely — Pons's contract ABI
-> still isn't available, and rather than stay blocked on it, every token this keeper tracks
-> is assumed to launch straight onto a Uniswap V4 pool. See
-> [`../keeper/README.md`](../keeper/README.md) for the reasoning and how to register a
-> token's real pool once it exists. Temporary, for testing/development — revisit once Pons's
-> ABI is actually available.
+> **Deliberate simplification in progress:** the Chain Indexer skips the Pons.family
+> bonding-curve phase below entirely — Pons's contract ABI still isn't available, and rather
+> than stay blocked on it, every token this keeper tracks is assumed to launch straight onto
+> an AMM pool. On testnet that's a self-deployed Uniswap-V2-style pool
+> (`contracts/src/mocks/UniswapV2Factory.sol`/`UniswapV2Pair.sol`) — Uniswap V4 confirmed
+> *not* deployed on Robinhood Chain Testnet at all (mainnet only:
+> `0x8366a39cc670b4001a1121b8f6a443a643e40951`), so the V4 adapter stays in the codebase
+> unused for now, ready for whenever mainnet is in scope. See
+> [`../keeper/README.md`](../keeper/README.md) for the full reasoning and how to register a
+> token's real pool. Temporary, for testing/development — revisit Pons once its ABI is
+> actually available.
 
 - Chain indexer against the testnet deployment: subscribe to the campaigning token's Pons
   bonding-curve contract and (post-graduation) its Uniswap V4 pool (PRD §3.2).
