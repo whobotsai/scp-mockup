@@ -60,4 +60,4 @@ async function indexCampaign(provider, log) {
   console.log(`[campaignIndexer] indexed campaign #${id} at ${campaign} (token ${token})`);
 }
 
-module.exports = { pollNewCampaigns };
+module.exports = { pollNewCampaigns, indexCampaign, CURSOR_KEY };

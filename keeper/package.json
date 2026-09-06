@@ -5,6 +5,7 @@
   "main": "src/index.js",
   "scripts": {
     "migrate": "node scripts/migrate.js",
+    "seed-known-campaign": "node scripts/seed-known-campaign.js",
     "start": "node src/index.js",
     "test": "node test/volumeAggregator.test.js"
   },

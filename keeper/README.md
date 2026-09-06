@@ -69,6 +69,31 @@ npm start                  # polls for campaigns + logs volume aggregator output
 `npm test` runs the Volume Aggregator's unit tests only (no `.env`/DB/RPC needed) — this is
 what's actually verifiable without live infrastructure.
 
+### If the first backfill is taking a very long time
+
+A free-tier RPC's `eth_getLogs` block-range cap (`GET_LOGS_MAX_BLOCK_RANGE`, `.env.example`)
+means `campaignIndexer.js` makes one request per chunk of that many blocks between
+`SHO_FACTORY_DEPLOY_BLOCK` and the current chain head. On a chain producing blocks quickly,
+that can be a lot of requests even over a short wall-clock time span — confirmed slow in
+practice against this project's own testnet deployment, not just a theoretical concern.
+
+`scripts/seed-known-campaign.js` is the fast-path around this for a specific already-known
+transaction (e.g. the one `contracts/scripts/test/01-create-campaign.js` produced): it looks
+the transaction up directly (`eth_getTransactionReceipt`, no block-range scan at all), seeds
+`campaigns` from its `CampaignCreated` log, then fast-forwards the indexer's cursor to the
+current chain head so ordinary polling resumes from "now" instead of from history.
+
+```bash
+npm run seed-known-campaign -- <txHash>
+```
+
+This is a one-time bootstrap for a known transaction, not a substitute for the real backfill
+— any *other* campaign created between the deploy block and whenever this runs would be
+missed by this shortcut specifically (though still caught by a from-scratch
+`campaignIndexer.js` backfill, just slowly). Fine for unblocking a demo/dev loop; not the
+answer for a production deployment, which should either use a paid RPC tier with a wider
+`eth_getLogs` range, or a proper log-streaming indexer instead of block-range polling.
+
 ## Deliberate deviations from `KEEPER_SERVICE_DESIGN.md`'s suggested stack
 
 - **ethers, not viem.** The design doc suggests viem; this uses `ethers` v6 to stay consistent
