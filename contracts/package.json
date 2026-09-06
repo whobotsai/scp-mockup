@@ -10,7 +10,8 @@
     "test:campaign:create": "node scripts/test/01-create-campaign.js",
     "test:campaign:post-root": "node scripts/test/02-post-root.js",
     "test:campaign:claim": "node scripts/test/03-claim.js",
-    "set-attestor": "node scripts/set-attestor.js"
+    "set-attestor": "node scripts/set-attestor.js",
+    "deploy-test-token": "node scripts/deploy-test-token.js"
   },
   "keywords": [],
   "author": "",

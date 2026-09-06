@@ -81,6 +81,21 @@ To deploy the same thing to a different network later (including mainnet, chain 
 PRD.md's header), just point `.env` at that network's RPC and a funded key — nothing else
 about `scripts/deploy.js` changes.
 
+## Deploying a test token
+
+`../keeper/`'s Chain Indexer needs a real token with a real Uniswap V4 pool to index anything
+(see `../keeper/README.md`'s "Deliberate simplification" section). `MockERC20` (test-only,
+never part of the real protocol) stands in for a real campaigning token here:
+
+```bash
+npm run deploy-test-token -- "My Test Token" MTT 1000000
+```
+
+Args are name, symbol, and initial supply minted to the deployer (all optional, shown are the
+defaults). Saves the address to `deployments/test-token.json`. After this, create the token's
+Uniswap V4 pool yourself, then register it with the keeper:
+`cd ../keeper && npm run register-token-pool -- <address> <poolManagerAddress> <poolId> <true|false>`.
+
 ## Manual end-to-end test on testnet
 
 Stage 0's exit criteria (`../docs/BACKEND_ROADMAP.md`) is a campaign walked through
