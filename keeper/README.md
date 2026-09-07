@@ -93,8 +93,11 @@ stays in the codebase, unused for now, ready for whenever mainnet is in scope.
 - **Snapshot Publisher + On-chain Poster** (build-order step 3): `snapshotPublisher.js` pins
   every computed snapshot's full leaderboard to IPFS via Lighthouse.storage (needs
   `LIGHTHOUSE_API_KEY`, see below — skips publishing, logged not errored, without one) so
-  anyone can independently recompute the root during the challenge window; `onchainPoster.js`
-  then posts any published snapshot's root on-chain automatically, tracked in
+  anyone can independently recompute the root during the challenge window. Publishing isn't
+  latency-sensitive (nothing needs the CID within seconds, only before anyone would actually
+  challenge a root), so it's throttled to its own cadence — `SNAPSHOT_PUBLISH_INTERVAL_MS`,
+  2 hours by default — instead of attempting an upload every `POLL_INTERVAL_MS` tick.
+  `onchainPoster.js` then posts any published snapshot's root on-chain automatically, tracked in
   `root_submissions` for the same idempotency guarantee `sho_trades`/`campaigns` already have
   (a crashed run resumes from that table's state instead of re-proposing a duplicate
   transaction). `alerts.js`'s missed-root check logs loudly if a crossing goes unposted past a

@@ -16,6 +16,19 @@ const db = require("./db");
 
 const LIGHTHOUSE_UPLOAD_URL = "https://node.lighthouse.storage/api/v0/add";
 
+// Publishing isn't latency-sensitive like trade/price indexing -- nothing downstream needs
+// the CID within seconds, only before anyone would actually want to challenge a root (the 24h
+// window). Attempting it every POLL_INTERVAL_MS tick would burn an API call (and, on a
+// failure, keep retrying every tick) for no real benefit, so this is throttled to its own much
+// longer interval instead. 2 hours by default -- override with SNAPSHOT_PUBLISH_INTERVAL_MS.
+const DEFAULT_PUBLISH_INTERVAL_MS = 2 * 60 * 60 * 1000;
+let lastAttemptAt = 0;
+
+/// Pure gate logic, exported for testing independent of Date.now()/this module's own state.
+function dueToPublish(lastAttemptAtMs, nowMs, intervalMs) {
+  return nowMs - lastAttemptAtMs >= intervalMs;
+}
+
 /// The exact payload a challenger needs to independently recompute the root and check it
 /// against what's posted on-chain: the full entry list plus enough context to know what
 /// campaign/milestone it belongs to.
@@ -49,7 +62,11 @@ async function uploadJson(payload, apiKey) {
   return cid;
 }
 
-async function publishPendingSnapshots() {
+async function publishPendingSnapshots(intervalMs = DEFAULT_PUBLISH_INTERVAL_MS) {
+  const now = Date.now();
+  if (!dueToPublish(lastAttemptAt, now, intervalMs)) return;
+  lastAttemptAt = now;
+
   const apiKey = process.env.LIGHTHOUSE_API_KEY;
   const pending = await db.snapshotsMissingIpfsCid();
 
@@ -71,4 +88,4 @@ async function publishPendingSnapshots() {
   }
 }
 
-module.exports = { buildPayload, publishPendingSnapshots };
+module.exports = { buildPayload, dueToPublish, DEFAULT_PUBLISH_INTERVAL_MS, publishPendingSnapshots };
