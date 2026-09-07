@@ -161,10 +161,24 @@ manually walked through milestone-reached / claim by hand (no automated keeper y
 > building this: naively re-posting an already-`reached` milestone (e.g. one a human already
 > posted by hand) hits the contract's *correction* path, not a no-op, and would silently reset
 > an open challenge window — both the automatic poster and the manual script now check
-> on-chain `reached` state first. 29 unit tests total. **Not yet exercised against a real IPFS
-> upload or a fresh automatic post** — no `LIGHTHOUSE_API_KEY` was available while building
-> this, and the one milestone crossed so far on testnet was already posted manually before
-> this pipeline existed; both need a real run to fully validate.
+> on-chain `reached` state first. 29 unit tests total.
+>
+> **The automatic-posting half is validated live; IPFS publishing is deliberately paused on a
+> network issue, not a code bug.** A second real correctness issue surfaced the same way as the
+> first: the "already reached, just backfill" check only ran on snapshots that already had an
+> `ipfs_cid`, so a snapshot whose IPFS publish kept failing could never get backfilled even
+> after a human posted it by hand — the missed-root alert fired forever on a milestone that was
+> actually fine. Fixed by decoupling the two: on-chain `reached` state is checked independently
+> of publish status now. With that fixed, restarting the keeper against the already-manually-
+> posted milestone correctly logged `already reached on-chain -- backfilled bookkeeping, no
+> transaction sent` with no false alert — confirming the automatic side of this step end to end.
+> The IPFS upload itself has not succeeded even once: every attempt against
+> `node.lighthouse.storage` fails with `UND_ERR_CONNECT_TIMEOUT` at the raw TCP level, confirmed
+> with `curl` independent of this codebase entirely, while `https://lighthouse.storage` (the
+> main site, presumably CDN-fronted with many IPs) opens normally from the same network — this
+> points at a routing/ISP issue to that one API origin (an AWS `ap-south-1` address), not a
+> code defect or a global outage. Left as an explicit, loud failure (logged, not silently
+> swallowed) rather than guessed at further; retry from a different network once convenient.
 
 - Chain indexer against the testnet deployment: subscribe to the campaigning token's Pons
   bonding-curve contract and (post-graduation) its Uniswap V4 pool (PRD §3.2).

@@ -109,7 +109,19 @@ stays in the codebase, unused for now, ready for whenever mainnet is in scope.
   any campaign with real funds goes live. `scripts/post-milestone-root.js` still exists as a
   manual override/backfill, now with a safety check refusing to re-post an already-`reached`
   milestone (which would otherwise hit the contract's *correction* path and silently reset an
-  open challenge window).
+  open challenge window). **Validated live**: restarting the keeper against a milestone already
+  posted by hand correctly logged `already reached on-chain -- backfilled bookkeeping, no
+  transaction sent`, with no false missed-root alert (an earlier version of this check was
+  gated behind a successful IPFS publish and got that exact case wrong -- fixed by decoupling
+  the two entirely).
+
+**IPFS publishing itself is deliberately paused on a network issue, not a code bug.** Every
+upload attempt against `node.lighthouse.storage` fails with `UND_ERR_CONNECT_TIMEOUT` at the
+raw TCP level, confirmed with `curl` independent of this codebase, while
+`https://lighthouse.storage` (the main site) opens normally from the same network -- pointing
+at a routing/ISP issue to that one API origin rather than a global outage or a request-shape
+bug. Left as a loud, logged failure rather than guessed at further; retry from a different
+network once convenient.
 
 **A real constraint, not a shortcut:** a token's TWAP is `null` (not "insufficient but
 computed anyway") until there's at least 30 real minutes of price-sample history for it —
