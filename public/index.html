@@ -2124,8 +2124,18 @@ function Profile({go, user, notify}){
   const created = useApiFetch(hasWallet ? `/wallets/${user.wallet}/created` : null, [hasWallet, user.wallet, refreshTick]);
   const [claiming, setClaiming] = useState(null);
 
-  const findSho = (addr)=> shoCampaigns.data && shoCampaigns.data.campaigns.find(c=>c.contract.toLowerCase()===addr.toLowerCase());
-  const findSso = (addr)=> ssoCampaigns.data && ssoCampaigns.data.campaigns.find(c=>c.contract.toLowerCase()===addr.toLowerCase());
+  // Normalized (not the raw api/ shape) so these match what CampaignCard/detail pages already
+  // expect -- window/epochLen/denom etc. only exist post-normalization (see
+  // normalizeShoCampaign/normalizeSsoCampaign), the raw response uses windowSeconds/
+  // epochSeconds/rewardTokenSymbol instead.
+  const findSho = (addr)=> {
+    const raw = shoCampaigns.data && shoCampaigns.data.campaigns.find(c=>c.contract.toLowerCase()===addr.toLowerCase());
+    return raw ? normalizeShoCampaign(raw) : null;
+  };
+  const findSso = (addr)=> {
+    const raw = ssoCampaigns.data && ssoCampaigns.data.campaigns.find(c=>c.contract.toLowerCase()===addr.toLowerCase());
+    return raw ? normalizeSsoCampaign(raw) : null;
+  };
 
   const shoPositions = (standings.data ? standings.data.sho : []).map(s=>({...s, c:findSho(s.campaignAddress)})).filter(p=>p.c);
   const ssoPositions = (standings.data ? standings.data.sso : []).map(s=>({...s, c:findSso(s.campaignAddress)})).filter(p=>p.c);
@@ -2216,7 +2226,7 @@ function Profile({go, user, notify}){
                       </div>
                       <div style={{display:'flex',alignItems:'center',gap:14}}>
                         <div style={{textAlign:'right'}}>
-                          <div className="mono" style={{fontWeight:600}}>{fmtNum(fmtTokenAmount(it.amount))} {it.full ? (it.full.rewardTokenSymbol||it.full.token) : ''}</div>
+                          <div className="mono" style={{fontWeight:600}}>{fmtNum(fmtTokenAmount(it.amount))} {it.full ? it.full.denom : ''}</div>
                         </div>
                         <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===it.campaignAddress+':'+it.index} onClick={(e)=>{e.stopPropagation(); doClaimFromProfile(it);}}>{claiming===it.campaignAddress+':'+it.index ? 'Claiming…' : 'Claim'}</Btn>
                       </div>
@@ -2323,7 +2333,7 @@ function Profile({go, user, notify}){
                             <td className="mono" style={{fontSize:12}}>{h.claimedAt ? new Date(h.claimedAt).toLocaleDateString() : '—'}</td>
                             <td><span style={{display:'inline-flex',alignItems:'center',gap:8}}>{f ? f.token : shortAddr(h.campaignAddress)} <Tag kind={h.factory}>{h.factory==='sho'?'SHO':'SSO'}</Tag></span></td>
                             <td className="camp-meta">{h.factory==='sho' ? `Milestone ${h.index}` : `Epoch ${h.index+1}`}</td>
-                            <td className="mono">{fmtNum(fmtTokenAmount(h.amount))} {f ? (f.rewardTokenSymbol||f.token) : ''} {h.txHash && <a href={explorerTxUrl(h.txHash)} target="_blank" rel="noopener noreferrer" className="camp-meta">(tx)</a>}</td>
+                            <td className="mono">{fmtNum(fmtTokenAmount(h.amount))} {f ? f.denom : ''} {h.txHash && <a href={explorerTxUrl(h.txHash)} target="_blank" rel="noopener noreferrer" className="camp-meta">(tx)</a>}</td>
                           </tr>
                         );
                       })}
