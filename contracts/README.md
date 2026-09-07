@@ -98,6 +98,17 @@ empty `handleOf`/`walletOfHandle`, so every already-registered wallet needs to c
 and `../keeper/`'s `handle_registrations` table needs truncating rather than left holding rows
 resolved against the old contract.
 
+**Decision (as of this writing): the testnet Registry at `deployments/46630.json` is deliberately
+left un-migrated.** It still runs the pre-`walletOfHandle` bytecode, so the one-wallet-per-handle
+fix isn't live there — accepted for now since testnet has no real funds/rewards at stake, rather
+than redeploy-and-reconcile a system nobody depends on staying stable. `npm run redeploy-registry`
+above is what to run *if* that changes before mainnet. The mainnet deploy itself needs no such
+step: it hasn't happened yet, and by the time it does, `npm run deploy` already ships whatever
+`Registry.sol` looks like at that point — the fix is simply part of the contract from mainnet's
+very first deployment, not a migration. Before that first mainnet `npm run deploy`, confirm
+`Registry.sol`'s `walletOfHandle` check (and its test coverage in `test/registry.test.js`) is
+still present and passing — don't let a mainnet deploy regress back to the pre-fix contract.
+
 ## Deploying a test token + pool, for the keeper to actually index something
 
 `../keeper/`'s Chain Indexer needs a real token with a real pool to index anything (see
