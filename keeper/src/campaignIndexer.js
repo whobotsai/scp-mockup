@@ -20,6 +20,21 @@ async function pollNewCampaigns(provider, factoryAddress, deployBlock) {
   let fromBlock = (await db.getCursor(CURSOR_KEY)) ?? BigInt(deployBlock);
   if (fromBlock > latest) return;
 
+  // A cursor that fell far behind (the keeper wasn't running for a while) used to backfill in
+  // total silence here -- the only log line in this loop fires per matching event, and most
+  // chunks find nothing -- so a multi-hour backfill at 10 blocks/request looked identical to a
+  // genuine hang. Confirmed live. Log the plan up front, then progress periodically.
+  const chunkSize = MAX_BLOCK_RANGE + 1n;
+  const totalBlocks = latest - fromBlock + 1n;
+  if (totalBlocks > chunkSize) {
+    console.log(
+      `[campaignIndexer] backfilling ${totalBlocks} blocks (${fromBlock} to ${latest}) in chunks of ` +
+        `${chunkSize} -- this can take a while on a free-tier RPC; see README's "If a backfill ` +
+        `is taking a very long time" section for a faster option (fast-forward-cursor.js).`
+    );
+  }
+
+  let lastLoggedAt = Date.now();
   while (fromBlock <= latest) {
     const toBlock = fromBlock + MAX_BLOCK_RANGE < latest ? fromBlock + MAX_BLOCK_RANGE : latest;
 
@@ -30,6 +45,11 @@ async function pollNewCampaigns(provider, factoryAddress, deployBlock) {
 
     await db.setCursor(CURSOR_KEY, toBlock);
     fromBlock = toBlock + 1n;
+
+    if (fromBlock <= latest && Date.now() - lastLoggedAt > 5000) {
+      console.log(`[campaignIndexer] backfill progress: at block ${toBlock} of ${latest}`);
+      lastLoggedAt = Date.now();
+    }
   }
 }
 

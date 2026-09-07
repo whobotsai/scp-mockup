@@ -34,6 +34,21 @@ async function pollTradesForCampaign(provider, campaign) {
   }
   if (fromBlock > latest) return;
 
+  // Same silent-backfill risk campaignIndexer.js's own fix documents: a cursor that fell far
+  // behind (the keeper wasn't running for a while) backfills here with nothing printed for any
+  // chunk that finds zero trades, indistinguishable from a hang. Log the plan up front, then
+  // progress periodically.
+  const chunkSize = MAX_BLOCK_RANGE + 1n;
+  const totalBlocks = latest - fromBlock + 1n;
+  if (totalBlocks > chunkSize) {
+    console.log(
+      `[tradeIndexer] ${campaign.campaign_address}: backfilling ${totalBlocks} blocks (${fromBlock} to ` +
+        `${latest}) in chunks of ${chunkSize} -- see README's "If a backfill is taking a very ` +
+        `long time" section for a faster option (fast-forward-cursor.js).`
+    );
+  }
+  let lastLoggedAt = Date.now();
+
   while (fromBlock <= latest) {
     const toBlock = fromBlock + MAX_BLOCK_RANGE < latest ? fromBlock + MAX_BLOCK_RANGE : latest;
 
@@ -80,6 +95,11 @@ async function pollTradesForCampaign(provider, campaign) {
 
     await db.setCursor(cursorKey, toBlock);
     fromBlock = toBlock + 1n;
+
+    if (fromBlock <= latest && Date.now() - lastLoggedAt > 5000) {
+      console.log(`[tradeIndexer] ${campaign.campaign_address}: backfill progress: at block ${toBlock} of ${latest}`);
+      lastLoggedAt = Date.now();
+    }
   }
 }
 
