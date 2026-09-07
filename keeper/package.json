@@ -9,6 +9,7 @@
     "register-token-pool": "node scripts/register-token-pool.js",
     "fast-forward-cursor": "node scripts/fast-forward-cursor.js",
     "post-milestone-root": "node scripts/post-milestone-root.js",
+    "claim-milestone": "node scripts/claim-milestone.js",
     "start": "node src/index.js",
     "test": "node test/volumeAggregator.test.js && node test/uniswapV2.test.js && node test/twapOracle.test.js && node test/rewardAllocator.test.js && node test/merkleTree.test.js"
   },

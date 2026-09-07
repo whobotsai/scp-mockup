@@ -30,10 +30,12 @@ migrations/
   002_token_pools.sql         Per-token pool config (originally V4-only)
   003_multi_venue_pools.sql   Generalized 002 to carry either venue's config
   004_snapshots.sql           Milestone Engine's frozen leaderboard snapshots
+  005_price_samples.sql       Price/TWAP Oracle's raw price samples
 scripts/
   register-token-pool.js     One-off: tell the indexer where a token's real pool lives
   fast-forward-cursor.js     One-off: skip a cursor past a backfill gap that's too slow to catch up
   post-milestone-root.js     Posts a computed snapshot on-chain — the manual half of step 2
+  claim-milestone.js         Claims a wallet's share of an already-posted milestone reward
 ```
 
 ## Deliberate simplification: no Pons phase, self-deployed AMM on testnet
@@ -165,6 +167,19 @@ npm run post-milestone-root -- <campaignAddress> <milestoneIndex>
 
 This needs `KEEPER_PRIVATE_KEY` in `.env` — the wallet SHOFactory's `keeper()` points at (see
 `.env.example`'s comment; currently the Stage 0 deployer placeholder).
+
+Once the 24h challenge window from that post has actually elapsed, an eligible wallet claims
+its share directly from the same snapshot (real Merkle proof, not the Stage 0 test walkthrough's
+hand-built single-leaf one):
+
+```bash
+npm run claim-milestone -- <campaignAddress> <milestoneIndex>
+```
+
+This needs `CLAIMANT_PRIVATE_KEY` in `.env` — the wallet actually claiming, i.e. whichever
+account is in that milestone's leaderboard (see `.env.example`'s comment). It errors clearly,
+without sending a transaction, if the window hasn't elapsed yet, if the wallet isn't in the
+snapshot, or if the tree it rebuilds from the stored entries doesn't match the posted root.
 
 ### If a backfill is taking a very long time
 
