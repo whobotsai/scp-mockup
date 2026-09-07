@@ -58,8 +58,22 @@ async function tick(provider, keeperWallet, publishIntervalMs) {
   await checkMissedRootAlerts();
 }
 
+// No RPC call anywhere in this keeper (getBlockNumber, queryFilter, a contract read, ...) had
+// any timeout -- confirmed live: a slow/unresponsive RPC endpoint hung the very first call of
+// a tick (campaignIndexer.js's provider.getBlockNumber()) forever, with no error and no further
+// log line at all, indistinguishable from the process being frozen. A FetchRequest with a
+// timeout bounds every call this provider makes, not just one call site -- a hung request now
+// rejects instead, gets caught by main()'s own try/catch below, logged, and retried next tick.
+const RPC_TIMEOUT_MS = 30_000;
+
+function buildProvider(rpcUrl) {
+  const fetchRequest = new ethers.FetchRequest(rpcUrl);
+  fetchRequest.timeout = RPC_TIMEOUT_MS;
+  return new ethers.JsonRpcProvider(fetchRequest);
+}
+
 async function main() {
-  const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
+  const provider = buildProvider(process.env.RPC_URL);
   const pollIntervalMs = Number(process.env.POLL_INTERVAL_MS || 15000);
   const publishIntervalMs = Number(process.env.SNAPSHOT_PUBLISH_INTERVAL_MS || DEFAULT_PUBLISH_INTERVAL_MS);
 
