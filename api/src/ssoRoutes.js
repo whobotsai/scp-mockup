@@ -6,7 +6,7 @@
 const express = require("express");
 const { ethers } = require("ethers");
 const db = require("./db");
-const { SSO_CAMPAIGN_ABI } = require("./abis");
+const { ERC20_ABI, SSO_CAMPAIGN_ABI, EPOCH_LENGTH_SECONDS } = require("./abis");
 const { daysLeft } = require("./shared");
 
 function router(provider) {
@@ -34,17 +34,41 @@ function router(provider) {
     return epochs;
   }
 
+  // Same reasoning as shoRoutes.js's resolveRewardToken -- resolved once here rather than
+  // making the frontend issue its own extra RPC calls per campaign card.
+  async function resolveRewardToken(rewardTokenAddress, tokenAddress, tokenSymbol) {
+    if (rewardTokenAddress === ethers.ZeroAddress) return { rewardToken: rewardTokenAddress, rewardTokenSymbol: "ETH" };
+    if (rewardTokenAddress.toLowerCase() === tokenAddress.toLowerCase()) {
+      return { rewardToken: rewardTokenAddress, rewardTokenSymbol: tokenSymbol };
+    }
+    const symbol = await new ethers.Contract(rewardTokenAddress, ERC20_ABI, provider).symbol().catch(() => null);
+    return { rewardToken: rewardTokenAddress, rewardTokenSymbol: symbol };
+  }
+
   async function loadCampaignSummary(row) {
     const contract = new ethers.Contract(row.campaign_address, SSO_CAMPAIGN_ABI, provider);
     const now = Math.floor(Date.now() / 1000);
-    const [totalLocked, epochs] = await Promise.all([contract.totalLocked(), loadEpochs(contract, now)]);
+    const [erc20Name, erc20Symbol, totalLocked, epochs, rewardTokenAddress, epochLengthIndex] = await Promise.all([
+      new ethers.Contract(row.token, ERC20_ABI, provider).name().catch(() => null),
+      new ethers.Contract(row.token, ERC20_ABI, provider).symbol().catch(() => null),
+      contract.totalLocked(),
+      loadEpochs(contract, now),
+      contract.rewardToken(),
+      contract.epochLength(),
+    ]);
+    const { rewardToken, rewardTokenSymbol } = await resolveRewardToken(rewardTokenAddress, row.token, erc20Symbol);
     const currentEpoch = epochs.find((e) => e.status === "active") ?? null;
 
     return {
       id: row.campaign_address,
       contract: row.campaign_address,
+      name: erc20Name,
+      token: erc20Symbol,
       keyword: row.keyword,
       tokenAddress: row.token,
+      rewardToken,
+      rewardTokenSymbol,
+      epochSeconds: EPOCH_LENGTH_SECONDS[Number(epochLengthIndex)],
       creator: row.creator,
       locked: totalLocked.toString(),
       leaderboardSize: row.leaderboard_size,

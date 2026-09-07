@@ -31,6 +31,7 @@ const SSO_CAMPAIGN_ABI = [
   "function creator() view returns (address)",
   "function rewardToken() view returns (address)",
   "function keyword() view returns (string)",
+  "function epochLength() view returns (uint8)",
   "function duration() view returns (uint256)",
   "function leaderboardSize() view returns (uint16)",
   "function createdAt() view returns (uint256)",
@@ -44,4 +45,9 @@ const SSO_CAMPAIGN_ABI = [
 // Mirrors contracts/src/libraries/Types.sol's MilestoneTier enum ordering.
 const MILESTONE_USD_THRESHOLDS = [100_000, 250_000, 1_000_000, 5_000_000];
 
-module.exports = { ERC20_ABI, SHO_CAMPAIGN_ABI, SSO_CAMPAIGN_ABI, MILESTONE_USD_THRESHOLDS };
+// Mirrors contracts/src/libraries/Types.sol's EpochLength enum ordering (H24, D7, D30) --
+// SSOCampaign.epochLength() returns the enum index, not seconds, and unlike SHO's
+// window_seconds this isn't stored in the keeper's DB at all, so the API resolves it here.
+const EPOCH_LENGTH_SECONDS = [24 * 60 * 60, 7 * 24 * 60 * 60, 30 * 24 * 60 * 60];
+
+module.exports = { ERC20_ABI, SHO_CAMPAIGN_ABI, SSO_CAMPAIGN_ABI, MILESTONE_USD_THRESHOLDS, EPOCH_LENGTH_SECONDS };

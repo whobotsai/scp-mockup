@@ -38,7 +38,7 @@ migrations/001_init.sql  Postgres schema (one audit table)
    if this link is stale).
 2. Under the app's **User authentication settings**, enable **OAuth 2.0**, set the app type to
    **Web App** (confidential client -- this service holds a client secret), and add a callback
-   URL matching `X_REDIRECT_URI` exactly (`http://localhost:3001/auth/x/callback` for local
+   URL matching `X_REDIRECT_URI` exactly (`http://localhost:3002/auth/x/callback` for local
    dev).
 3. Copy the **Client ID** and **Client Secret** into `.env` -- handled the same way every
    other credential in this project is: added directly to your own `.env` file, never
@@ -74,13 +74,15 @@ docker compose up -d       # local Postgres on port 5433 (not 5432 -- see docker
 cp .env.example .env       # fill in X_CLIENT_ID, X_CLIENT_SECRET, ATTESTOR_PRIVATE_KEY
 npm install
 npm run migrate            # applies migrations/001_init.sql
-npm start                  # listens on :3001
+npm start                  # listens on :3002 (../api defaults to :3001 -- see .env.example)
 ```
 
-To try the flow manually: visit `http://localhost:3001/auth/x/start?wallet=0xYourAddress` in
+To try the flow manually: visit `http://localhost:3002/auth/x/start?wallet=0xYourAddress` in
 a browser, approve on X's consent screen, and the callback page shows the wallet, handle, and
 attestation -- along with the exact `registerHandle(...)` call to submit from that wallet to
-finish linking on-chain.
+finish linking on-chain. Set `FRONTEND_URL` in `.env` (Stage 2) and this hands off to the
+frontend's own `#/link-x` page instead, which submits that `registerHandle(...)` call itself
+using the connected wallet -- see `../public/index.html`'s `LinkXCallback`.
 
 `npm test` runs the attestation + PKCE unit tests only (no `.env`/DB/network needed) -- this
 is what's actually verifiable without live infrastructure and a real X Developer App.
@@ -92,8 +94,9 @@ is what's actually verifiable without live infrastructure and a real X Developer
   Indexer's job (Stage 1, once built), evaluated at scoring time, not a registration-time
   gate. Any X account can register a handle; whether its posts ever count toward an SSO
   epoch is decided later, elsewhere.
-- **No frontend.** The callback page above is a plain debug page for manual testing, not a
-  real UI -- wiring a wallet-connected frontend into `/auth/x/start` is Stage 2's job
-  (`../docs/BACKEND_ROADMAP.md`), once there's a real frontend integration pass.
+- **The debug page above still exists** (whenever `FRONTEND_URL` is unset) for manual testing
+  without a running frontend. With `FRONTEND_URL` set, `../public/index.html` (Stage 2) is the
+  real UI: it redirects here from a connected wallet and finishes the on-chain
+  `registerHandle(...)` call itself on return -- see its `LinkXCallback`.
 - **ethers, not a different web3 library** -- consistent with `../contracts/` and
   `../keeper/`, same rationale as documented in both of those READMEs.

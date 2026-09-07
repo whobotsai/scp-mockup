@@ -30,17 +30,27 @@ firebase.json               Firebase Hosting config
 .firebaserc                 Firebase project binding (set your project ID here)
 ```
 
-## The prototype
+## The frontend
 
-`public/index.html` is a self-contained single-page app: React, ReactDOM, and
-Babel are loaded from a CDN and JSX is compiled in the browser, so there is no
-build step. It covers the full flow — landing page, SHO and SSO discovery,
-campaign detail and creation, registration, and a user dashboard — running
-entirely on mock data. There is no backend and no on-chain integration; nothing
-here executes real transactions.
+`public/index.html` is a self-contained single-page app: React and ReactDOM are
+loaded from a CDN, Babel is vendored locally (`public/vendor/`, alongside a
+vendored copy of ethers so wallet/contract calls don't depend on a third CDN),
+and JSX is compiled in the browser, so there is no build step. It covers the
+full flow — landing page, SHO and SSO discovery, campaign detail and creation,
+registration, and a user dashboard — and is wired to real infrastructure, not
+mock data: campaign/token/leaderboard reads come from `api/`, wallet connect
+and `createCampaign()`/`claim()` submissions go through an injected wallet
+(e.g. MetaMask) straight to the contracts on Robinhood Chain Testnet, and X
+registration redirects through `registration-service`'s real OAuth flow before
+submitting `Registry.registerHandle(...)` on-chain. See `public/index.html`'s
+own `SCP_CONFIG` block for the addresses/URLs this points at, and each
+package's own README for what's actually been verified end-to-end versus still
+pending a live round-trip.
 
 To preview it locally, just open the file in a browser, or serve the `public`
-directory with any static file server.
+directory with any static file server. `api/` and (for SSO registration)
+`registration-service/` need to be running for it to show live data instead of
+per-page "couldn't load" states.
 
 ## Deploying
 
@@ -65,5 +75,11 @@ Routing in the app is client-side (URL hash, e.g. `#/sho`), so a single
 
 ## Status
 
-Prototype and documentation draft. Figures shown in the UI are illustrative
-mock data, not live metrics.
+Contracts deployed to Robinhood Chain Testnet, keeper and API layer running
+against them, frontend wired to both plus real wallet/OAuth flows -- see
+`docs/BACKEND_ROADMAP.md` for exactly what stage each piece is at and what's
+still unverified (a live IPFS publish, a completed X OAuth round-trip, and an
+actually-submitted on-chain transaction from the UI all need a normal-network
+environment this sandbox doesn't have). A few platform-wide figures on the
+landing page (total reward pool / distributed rewards) are still illustrative
+placeholders -- everything else is live.

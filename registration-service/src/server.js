@@ -22,11 +22,17 @@ function requireEnv(name) {
   return value;
 }
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3002;
 const CLIENT_ID = requireEnv("X_CLIENT_ID");
 const CLIENT_SECRET = requireEnv("X_CLIENT_SECRET");
 const REDIRECT_URI = requireEnv("X_REDIRECT_URI");
 const attestorWallet = new ethers.Wallet(requireEnv("ATTESTOR_PRIVATE_KEY"));
+// Optional (Stage 2, docs/BACKEND_ROADMAP.md): the frontend's own origin. When set, the
+// callback hands the result off to the frontend's hash router instead of rendering the debug
+// page below -- see public/index.html's LinkXCallback, which is the piece that actually
+// submits registerHandle(...) using the connected wallet. Unset by default so this service
+// stays usable standalone for manual/dev testing exactly as before.
+const FRONTEND_URL = process.env.FRONTEND_URL || null;
 
 console.log(`Attestor address: ${attestorWallet.address}`);
 console.log(
@@ -38,6 +44,37 @@ console.log(
 const app = express();
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
+
+// Hands the outcome off to FRONTEND_URL's hash router when configured (302, params in the
+// fragment so they never hit any server log), otherwise falls back to the plain debug page
+// this service has always rendered -- same fallback for both the success and error paths, so
+// a partially-configured frontend never leaves the user looking at a raw Express error.
+function sendResult(res, { wallet, handle, attestation, error }) {
+  if (FRONTEND_URL) {
+    const params = new URLSearchParams();
+    if (wallet) params.set("wallet", wallet);
+    if (handle) params.set("handle", handle);
+    if (attestation) params.set("attestation", attestation);
+    if (error) params.set("error", error);
+    return res.redirect(`${FRONTEND_URL.replace(/\/$/, "")}/#/link-x?${params.toString()}`);
+  }
+  if (error) return res.status(400).send(error);
+  res.type("html").send(`
+      <!doctype html>
+      <title>Registration complete</title>
+      <pre>
+Wallet:      ${wallet}
+X handle:    ${handle}
+Attestation: ${attestation}
+
+Submit this on-chain yourself (from the wallet above) to finish linking:
+
+  Registry.registerHandle("${handle}", "${attestation}")
+
+Registry address: see ../contracts/deployments/46630.json
+      </pre>
+    `);
+}
 
 // Step 1: a wallet-connected frontend (Stage 2's job) redirects the user here with their
 // wallet address, this service redirects to X's consent screen.
@@ -65,15 +102,15 @@ app.get("/auth/x/callback", async (req, res) => {
   const { code, state, error } = req.query;
 
   if (error) {
-    return res.status(400).send(`X declined authorization: ${error}`);
+    return sendResult(res, { error: `X declined authorization: ${error}` });
   }
   if (typeof code !== "string" || typeof state !== "string") {
-    return res.status(400).send("Missing code or state in callback.");
+    return sendResult(res, { error: "Missing code or state in callback." });
   }
 
   const session = sessions.take(state);
   if (!session) {
-    return res.status(400).send("Unknown or expired login session -- start over at /auth/x/start.");
+    return sendResult(res, { error: "Unknown or expired login session -- start over at /auth/x/start." });
   }
 
   try {
@@ -89,27 +126,10 @@ app.get("/auth/x/callback", async (req, res) => {
 
     await db.recordRegistration(session.wallet, xHandle, attestation);
 
-    // No frontend to hand this off to yet (Stage 2) -- render it directly so this is usable
-    // for manual/dev testing today, same spirit as contracts/scripts/test/*.js's manual
-    // walkthrough before Stage 1 automated posting.
-    res.type("html").send(`
-      <!doctype html>
-      <title>Registration complete</title>
-      <pre>
-Wallet:      ${session.wallet}
-X handle:    ${xHandle}
-Attestation: ${attestation}
-
-Submit this on-chain yourself (from the wallet above) to finish linking:
-
-  Registry.registerHandle("${xHandle}", "${attestation}")
-
-Registry address: see ../contracts/deployments/46630.json
-      </pre>
-    `);
+    sendResult(res, { wallet: session.wallet, handle: xHandle, attestation });
   } catch (e) {
     console.error(e);
-    res.status(500).send(`Registration failed: ${e.message}`);
+    sendResult(res, { error: `Registration failed: ${e.message}` });
   }
 });
 

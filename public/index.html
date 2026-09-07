@@ -535,12 +535,208 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px;}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+<!-- Vendored (not CDN-pinned) so this stays in lockstep with the exact ethers version every
+     other package in this repo uses (see e.g. ../api/package.json) -- copied straight from
+     ethers' own dist/ethers.umd.min.js, see vendor/ETHERS_LICENSE.md. Exposes window.ethers. -->
+<script src="vendor/ethers.umd.min.js"></script>
 
 <script type="text/babel" data-presets="react">
-const {useState, useEffect, useMemo, useCallback} = React;
+const {useState, useEffect, useMemo, useCallback, useRef} = React;
+
+/* ===================== CONFIG ===================== */
+// Everything here is a real, live-network value (Robinhood Chain Testnet, chain ID 46630 --
+// see ../contracts/deployments/46630.json), not a placeholder. Override any of it without
+// touching this file by setting `window.SCP_CONFIG = {...}` in a small inline <script> before
+// this one loads (e.g. a per-deployment config.js Firebase Hosting serves alongside
+// index.html) -- useful for pointing a preview build at a different API host.
+const SCP_CONFIG = Object.assign({
+  API_BASE_URL: 'http://localhost:3001',
+  REGISTRATION_SERVICE_URL: 'http://localhost:3002',
+  CHAIN_ID: 46630,
+  CHAIN_NAME: 'Robinhood Chain Testnet',
+  RPC_URL: 'https://rpc.testnet.chain.robinhood.com/rpc',
+  EXPLORER_URL: 'https://explorer.testnet.chain.robinhood.com',
+  NATIVE_SYMBOL: 'ETH',
+  SHO_FACTORY_ADDRESS: '0x257F835b1066c064e9e9896c31556034f8Eee8c9',
+  SSO_FACTORY_ADDRESS: '0x3770ae529595D0994297C35F7b75CEAD612749aa',
+  REGISTRY_ADDRESS: '0xc2ed3d2b8CCa32B8cBC6F6a99D538129c1430065',
+  // No stablecoin deployed on this testnet yet (PRD §5's USDC allowlist is an off-chain/
+  // frontend policy, not contract-enforced -- see SHOFactory.sol's own createCampaign
+  // comment). Set this once one exists; the wizard disables the USDC option while it's empty
+  // rather than sending a made-up address on-chain.
+  USDC_ADDRESS: '',
+}, window.SCP_CONFIG || {});
+const CHAIN_ID_HEX = '0x' + SCP_CONFIG.CHAIN_ID.toString(16);
+
+/* ===================== CONTRACT INTERFACES ===================== */
+// Minimal fragments this page actually calls -- mirrors ../api/src/abis.js (read side) plus
+// the write calls (approve/createCampaign/claim/registerHandle) the API never needs to make.
+// Duplicated rather than shared across packages for the same reason api/src/abis.js's own
+// header gives: each package here is independently deployable.
+const ERC20_ABI = [
+  "function name() view returns (string)",
+  "function symbol() view returns (string)",
+  "function decimals() view returns (uint8)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+];
+const CAMPAIGN_ABI = [
+  // claim()'s signature is identical for SHOCampaign and SSOCampaign (see
+  // ../api/src/claimRoutes.js's own header) so one fragment covers both.
+  "function claim(uint256 index, uint256 amount, bytes32[] calldata proof) external",
+  "function claimed(uint256 index, address account) view returns (bool)",
+];
+const SHO_FACTORY_ABI = [
+  "function createCampaign(address token, address rewardToken, uint256 amount, uint8 window, uint16 leaderboardSize, uint256 duration, uint8[] tiers, uint16[] rewardBpsList) payable returns (address campaign)",
+  "event CampaignCreated(uint256 indexed id, address indexed campaign, address indexed creator, address token, address rewardToken, uint256 totalLocked)",
+];
+const SSO_FACTORY_ABI = [
+  "function createCampaign(address token, address rewardToken, uint256 amount, string keyword, uint8 epochLength, uint16 leaderboardSize, uint256 duration, uint16[] epochRewardBpsList) payable returns (address campaign)",
+  "event CampaignCreated(uint256 indexed id, address indexed campaign, address indexed creator, address token, address rewardToken, uint256 totalLocked, string keyword)",
+];
+const REGISTRY_ABI = [
+  "function handleOf(address) view returns (string)",
+  "function registerHandle(string calldata xHandle, bytes calldata attestation) external",
+];
+
+// A read-only provider for calls that don't need a connected wallet (e.g. checking
+// Registry.handleOf before/without a signer). Memoized so it's only constructed once.
+let _readProvider = null;
+function readProvider(){
+  if(!window.ethers){ throw new Error('web3 library failed to load'); }
+  if(!_readProvider) _readProvider = new window.ethers.JsonRpcProvider(SCP_CONFIG.RPC_URL);
+  return _readProvider;
+}
+
+/* ===================== SMALL SHARED HELPERS (chain/network) ===================== */
+
+function shortAddr(addr){
+  if(!addr) return '';
+  return addr.slice(0,6)+'...'+addr.slice(-4);
+}
+function explorerAddressUrl(addr){ return `${SCP_CONFIG.EXPLORER_URL}/address/${addr}`; }
+function explorerTxUrl(hash){ return `${SCP_CONFIG.EXPLORER_URL}/tx/${hash}`; }
+
+// Best-effort human message out of an ethers/JSON-RPC error -- these nest the actually useful
+// string a few different ways depending on where the failure happened (wallet rejection vs.
+// a contract revert vs. a network error), so check the specific spots before falling back to
+// whatever's in .message (often a wall of raw RPC JSON).
+function shortError(e){
+  if(!e) return 'unknown error';
+  return e.reason || e.shortMessage || e?.info?.error?.message || e?.error?.message || e.message || String(e);
+}
+
+function parseQuery(qs){
+  const out = {};
+  new URLSearchParams(qs||'').forEach((v,k)=>{ out[k]=v; });
+  return out;
+}
+
+// Prompts a wallet switch to Robinhood Chain Testnet, adding it first if the wallet has never
+// seen this chain before (error code 4902 is EIP-3085's signal for exactly that case).
+async function ensureChain(ethereum){
+  try {
+    await ethereum.request({ method:'wallet_switchEthereumChain', params:[{chainId:CHAIN_ID_HEX}] });
+  } catch(switchErr){
+    if(switchErr && switchErr.code===4902){
+      await ethereum.request({ method:'wallet_addEthereumChain', params:[{
+        chainId: CHAIN_ID_HEX,
+        chainName: SCP_CONFIG.CHAIN_NAME,
+        nativeCurrency: { name: SCP_CONFIG.NATIVE_SYMBOL, symbol: SCP_CONFIG.NATIVE_SYMBOL, decimals: 18 },
+        rpcUrls: [SCP_CONFIG.RPC_URL],
+        blockExplorerUrls: [SCP_CONFIG.EXPLORER_URL],
+      }]});
+    } else {
+      throw switchErr;
+    }
+  }
+}
+
+/* ===================== API DATA LAYER ===================== */
+// Replaces the old hand-authored SHO_CAMPAIGNS/SSO_CAMPAIGNS/TOKEN_REGISTRY/MY_*/
+// CLAIM_HISTORY mock arrays with live reads from ../api (Stage 2, docs/BACKEND_ROADMAP.md) --
+// a thin layer in front of the keeper's own Postgres + direct contract reads, never a second
+// source of truth. One generic hook does the fetching; callers pass `null` for `path` to skip
+// the request entirely (e.g. a wallet-scoped endpoint before any wallet is connected).
+function useApiFetch(path, deps){
+  const [state, setState] = useState({loading: path!==null, data:null, error:null});
+  useEffect(()=>{
+    if(path===null){ setState({loading:false, data:null, error:null}); return; }
+    let cancelled = false;
+    setState(s=>({...s, loading:true, error:null}));
+    fetch(SCP_CONFIG.API_BASE_URL+path)
+      .then(async (r)=>{
+        const body = await r.json().catch(()=>({error:`non-JSON response (HTTP ${r.status})`}));
+        if(!r.ok) throw new Error(body.error || `request failed (HTTP ${r.status})`);
+        return body;
+      })
+      .then((body)=>{ if(!cancelled) setState({loading:false, data:body, error:null}); })
+      .catch((e)=>{ if(!cancelled) setState({loading:false, data:null, error:e.message}); });
+    return ()=>{ cancelled = true; };
+    // eslint-disable-next-line
+  }, deps);
+  return state;
+}
+
+// windowSeconds/durationSeconds/epochSeconds from the API back to the '24H'/'7D'/'30D' /
+// '7D'/'30D'/'90D' labels the rest of this file's UI already speaks in.
+function secondsToWindowLabel(s){
+  if(s===86400) return '24H';
+  if(s===604800) return '7D';
+  if(s===2592000) return '30D';
+  return Math.round(s/86400)+'D';
+}
+function secondsToDurationLabel(s){ return Math.round(s/86400)+'D'; }
+
+// Maps a shoRoutes.js campaign summary onto the shape CampaignCard/SHODetail already render.
+function normalizeShoCampaign(c){
+  return {
+    id: c.id,
+    token: c.token || shortAddr(c.tokenAddress),
+    name: c.name || c.token || shortAddr(c.tokenAddress),
+    tokenAddress: c.tokenAddress,
+    rewardTokenAddress: c.rewardToken,
+    creator: c.creator,
+    contract: c.id,
+    locked: c.locked, // raw units (18 decimals assumed, same as ../api/src/shoRoutes.js)
+    denom: c.rewardTokenSymbol || c.token,
+    window: secondsToWindowLabel(c.windowSeconds),
+    size: c.leaderboardSize,
+    duration: secondsToDurationLabel(c.durationSeconds),
+    daysLeft: c.daysLeft,
+    mcap: c.mcap,
+    openedDaysAgo: Math.floor((Date.now()-new Date(c.createdAt).getTime())/86400000),
+    milestones: c.milestones,
+    topLeaderboard: c.topLeaderboard || null,
+  };
+}
+function normalizeSsoCampaign(c){
+  return {
+    id: c.id,
+    token: c.token || shortAddr(c.tokenAddress),
+    name: c.name || c.token || shortAddr(c.tokenAddress),
+    tokenAddress: c.tokenAddress,
+    rewardTokenAddress: c.rewardToken,
+    creator: c.creator,
+    contract: c.id,
+    keyword: c.keyword,
+    locked: c.locked,
+    denom: c.rewardTokenSymbol || c.token,
+    epochLen: secondsToWindowLabel(c.epochSeconds),
+    size: c.leaderboardSize,
+    duration: secondsToDurationLabel(c.durationSeconds),
+    openedDaysAgo: Math.floor((Date.now()-new Date(c.createdAt).getTime())/86400000),
+    epochs: (c.epochs||[]).map(e=>({index: e.index, n: e.index+1, bps: e.bps, endsAt: e.endsAt, status: e.status})),
+    currentEpochIndex: c.currentEpochIndex,
+    topLeaderboard: c.topLeaderboard || null,
+  };
+}
 
 /* ===================== MOCK DATA ===================== */
 
+// Real, fixed tier ladder -- mirrors contracts/src/libraries/Types.sol's MilestoneTier enum
+// ordering exactly (index = enum value, used as-is in CreateWizard's on-chain call) and
+// api/src/abis.js's TIER_LABELS/MILESTONE_USD_THRESHOLDS.
 const MS_TIERS = [
   {id:'100K', label:'$100K', value:100000},
   {id:'250K', label:'$250K', value:250000},
@@ -548,211 +744,11 @@ const MS_TIERS = [
   {id:'5M',   label:'$5M',   value:5000000},
 ];
 
-const WALLETS = ['0x71C4...9e4B','0x2fA8...11c0','0x9b3D...7aF2','0x44E1...c9D6','0x0aF9...5b31','0x8d2C...ee47','0x63B0...2fA9','0x1eD7...88c3','0xac41...0dE5','0x5f9A...b217'];
-const XHANDLES = ['@kaiju_whale','@northstar_fan','@gridlock_gm','@snackpack_army','@moonpup_dao','@ledger_lurker','@vault_scout','@basecamp_bull','@epoch_runner','@driftless'];
-
-function seededShare(seed){ return 0.4 + (seed*37)%60/100; }
-
-const SHO_CAMPAIGNS = [
-  {
-    id:'kaiju-sho-1', token:'$KAIJU', name:'Kaiju', creator:'0x71C4...9e4B', creatorType:'Dev',
-    contract:'0x9F2Ab3C1D4E5F60718293A4B5C6D7E8F9A0B1C2D',
-    locked: 12500000, denom:'$KAIJU', window:'7D', size:100, duration:'30D', daysLeft:18, mcap: 214000, openedDaysAgo:12,
-    milestones:[
-      {tier:'100K', bps:2000, status:'claimed'},
-      {tier:'250K', bps:3000, status:'active'},
-      {tier:'1M', bps:2500, status:'pending'},
-      {tier:'5M', bps:2500, status:'pending'},
-    ],
-  },
-  {
-    id:'moonpup-sho-1', token:'$MOONPUP', name:'Moon Pup', creator:'0x2fA8...11c0', creatorType:'Holder',
-    contract:'0x4C1A2B3D4E5F60718293A4B5C6D7E8F9A0B1C3E',
-    locked: 4000000, denom:'USDC', window:'24H', size:50, duration:'7D', daysLeft:2, mcap: 268000, openedDaysAgo:5,
-    milestones:[
-      {tier:'100K', bps:4000, status:'claimed'},
-      {tier:'250K', bps:6000, status:'claimable'},
-    ],
-  },
-  {
-    id:'gridlock-sho-1', token:'$GRIDLOCK', name:'Gridlock', creator:'0x9b3D...7aF2', creatorType:'Dev',
-    contract:'0x7D3E4F5061728394A5B6C7D8E9F0A1B2C3D4E5F',
-    locked: 30000000, denom:'ETH', window:'30D', size:500, duration:'90D', daysLeft:88, mcap: 41000, openedDaysAgo:2,
-    milestones:[
-      {tier:'100K', bps:2500, status:'pending'},
-      {tier:'250K', bps:2500, status:'pending'},
-      {tier:'1M', bps:2500, status:'pending'},
-      {tier:'5M', bps:2500, status:'pending'},
-    ],
-  },
-  {
-    id:'northstar-sho-1', token:'$NORTH', name:'North Star', creator:'0x44E1...c9D6', creatorType:'Dev',
-    contract:'0x2A3B4C5D6E7F8091A2B3C4D5E6F708192A3B4C5D',
-    locked: 8000000, denom:'$NORTH', window:'7D', size:75, duration:'21D', daysLeft:5, mcap: 156000, openedDaysAgo:16,
-    milestones:[
-      {tier:'100K', bps:3500, status:'claimed'},
-      {tier:'250K', bps:3500, status:'active'},
-      {tier:'1M', bps:3000, status:'pending'},
-    ],
-  },
-  {
-    id:'frostbyte-sho-1', token:'$FROST', name:'Frostbyte', creator:'0x0aF9...5b31', creatorType:'Holder',
-    contract:'0x3B4C5D6E7F8091A2B3C4D5E6F708192A3B4C5D6E',
-    locked: 15000000, denom:'USDC', window:'24H', size:60, duration:'14D', daysLeft:9, mcap: 89000, openedDaysAgo:5,
-    milestones:[
-      {tier:'100K', bps:5000, status:'active'},
-      {tier:'250K', bps:5000, status:'pending'},
-    ],
-  },
-  {
-    id:'catnip-sho-1', token:'$CATNIP', name:'Catnip', creator:'0x8f3D...b2A1', creatorType:'Dev',
-    contract:'0x4C5D6E7F8091A2B3C4D5E6F708192A3B4C5D6E7F',
-    locked: 20000000, denom:'$CATNIP', window:'30D', size:200, duration:'60D', daysLeft:44, mcap: 310000, openedDaysAgo:16,
-    milestones:[
-      {tier:'100K', bps:2000, status:'claimed'},
-      {tier:'250K', bps:2000, status:'claimed'},
-      {tier:'1M', bps:3000, status:'active'},
-      {tier:'5M', bps:3000, status:'pending'},
-    ],
-  },
-  {
-    id:'basecamp-sho-1', token:'$BASECAMP', name:'Basecamp', creator:'0x63B0...2fA9', creatorType:'Dev',
-    contract:'0x5D6E7F8091A2B3C4D5E6F708192A3B4C5D6E7F80',
-    locked: 5000000, denom:'ETH', window:'7D', size:40, duration:'30D', daysLeft:27, mcap: 62000, openedDaysAgo:3,
-    milestones:[
-      {tier:'100K', bps:5000, status:'pending'},
-      {tier:'250K', bps:5000, status:'pending'},
-    ],
-  },
-  {
-    id:'embertail-sho-1', token:'$EMBER', name:'Embertail', creator:'0x1eD7...88c3', creatorType:'Holder',
-    contract:'0x6E7F8091A2B3C4D5E6F708192A3B4C5D6E7F8091',
-    locked: 10000000, denom:'$EMBER', window:'24H', size:80, duration:'21D', daysLeft:1, mcap: 445000, openedDaysAgo:20,
-    milestones:[
-      {tier:'100K', bps:2500, status:'claimed'},
-      {tier:'250K', bps:2500, status:'claimed'},
-      {tier:'1M', bps:2500, status:'claimable'},
-      {tier:'5M', bps:2500, status:'pending'},
-    ],
-  },
-];
-
-// Mock on-chain token registry: creators add a reward token by contract address,
-// the ticker/name/profile is resolved from this (simulating an indexer lookup), never typed by hand.
-const TOKEN_REGISTRY = {
-  '0x9F2Ab3C1D4E5F60718293A4B5C6D7E8F9A0B1C2D': {name:'Kaiju', ticker:'$KAIJU', website:'kaiju.meme', twitter:'@kaijutoken', mcap:214000, ath:340000, holders:4820},
-  '0x4C1A2B3D4E5F60718293A4B5C6D7E8F9A0B1C3E': {name:'Moon Pup', ticker:'$MOONPUP', website:'moonpup.xyz', twitter:'@moonpupcoin', mcap:268000, ath:412000, holders:2310},
-  '0x7D3E4F5061728394A5B6C7D8E9F0A1B2C3D4E5F': {name:'Gridlock', ticker:'$GRIDLOCK', website:'gridlock.fi', twitter:'@gridlocktoken', mcap:41000, ath:96000, holders:980},
-  '0x1B8C9D0E1F2A3B4C5D6E7F8091A2B3C4D5E6F70': {name:'Snack Pack', ticker:'$SNACKPACK', website:'snackpack.army', twitter:'@snackpackarmy', mcap:58000, ath:140000, holders:1540},
-  '0x2A3B4C5D6E7F8091A2B3C4D5E6F708192A3B4C5D': {name:'North Star', ticker:'$NORTH', website:'northstar.win', twitter:'@northstartoken', mcap:156000, ath:198000, holders:1120},
-  '0x3B4C5D6E7F8091A2B3C4D5E6F708192A3B4C5D6E': {name:'Frostbyte', ticker:'$FROST', website:'frostbyte.gg', twitter:'@frostbytecoin', mcap:89000, ath:132000, holders:640},
-  '0x4C5D6E7F8091A2B3C4D5E6F708192A3B4C5D6E7F': {name:'Catnip', ticker:'$CATNIP', website:'catnip.meme', twitter:'@catniptoken', mcap:310000, ath:410000, holders:3980},
-  '0x5D6E7F8091A2B3C4D5E6F708192A3B4C5D6E7F80': {name:'Basecamp', ticker:'$BASECAMP', website:'basecamp.fi', twitter:'@basecamptoken', mcap:62000, ath:84000, holders:510},
-  '0x6E7F8091A2B3C4D5E6F708192A3B4C5D6E7F8091': {name:'Embertail', ticker:'$EMBER', website:'embertail.xyz', twitter:'@embertailcoin', mcap:445000, ath:520000, holders:6210},
-  '0x7F8091A2B3C4D5E6F708192A3B4C5D6E7F80912A': {name:'Driftless', ticker:'$DRIFT', website:'driftless.fun', twitter:'@driftlesstoken', mcap:73000, ath:110000, holders:820},
-  '0x8091A2B3C4D5E6F708192A3B4C5D6E7F80912A3B': {name:'Pixel Wolf', ticker:'$PXWOLF', website:'pixelwolf.gg', twitter:'@pixelwolftoken', mcap:127000, ath:190000, holders:1740},
-  '0x91A2B3C4D5E6F708192A3B4C5D6E7F80912A3B4C': {name:'Feral Cat', ticker:'$FERAL', website:'feralcat.meme', twitter:'@feralcattoken', mcap:34000, ath:71000, holders:390},
-};
-function resolveToken(addr){
-  const key = Object.keys(TOKEN_REGISTRY).find(k=>k.toLowerCase()===String(addr||'').trim().toLowerCase());
-  return key ? TOKEN_REGISTRY[key] : null;
-}
-
-const SSO_CAMPAIGNS = [
-  {
-    id:'kaiju-sso-1', token:'$KAIJU', name:'Kaiju', creator:'0x71C4...9e4B', creatorType:'Dev',
-    contract:'0x9F2Ab3C1D4E5F60718293A4B5C6D7E8F9A0B1C2D',
-    keyword:'$KAIJU', locked: 6000000, denom:'$KAIJU', epochLen:'7D', size:50, duration:'30D', openedDaysAgo:15,
-    epochs:[
-      {n:1, status:'claimed'}, {n:2, status:'active'}, {n:3, status:'pending'}, {n:4, status:'pending'},
-    ],
-  },
-  {
-    id:'snackpack-sso-1', token:'$SNACKPACK', name:'Snack Pack', creator:'0xac41...0dE5', creatorType:'Holder',
-    contract:'0x1B8C9D0E1F2A3B4C5D6E7F8091A2B3C4D5E6F70',
-    keyword:'#SnackPackArmy', locked: 900000, denom:'USDC', epochLen:'24H', size:100, duration:'30D', openedDaysAgo:9,
-    epochs: Array.from({length:30}, (_,i)=>({n:i+1, status: i<8?'claimed': i===8?'active':'pending'})),
-  },
-  {
-    id:'northstar-sso-1', token:'$NORTH', name:'North Star', creator:'0x44E1...c9D6', creatorType:'Dev',
-    contract:'0x2A3B4C5D6E7F8091A2B3C4D5E6F708192A3B4C5D',
-    keyword:'$NORTH', locked: 3200000, denom:'$NORTH', epochLen:'7D', size:40, duration:'21D', openedDaysAgo:12,
-    epochs:[
-      {n:1, status:'claimed'}, {n:2, status:'active'}, {n:3, status:'pending'},
-    ],
-  },
-  {
-    id:'basecamp-sso-1', token:'$BASECAMP', name:'Basecamp', creator:'0x63B0...2fA9', creatorType:'Dev',
-    contract:'0x5D6E7F8091A2B3C4D5E6F708192A3B4C5D6E7F80',
-    keyword:'#BasecampGang', locked: 1400000, denom:'ETH', epochLen:'24H', size:35, duration:'30D', openedDaysAgo:4,
-    epochs: Array.from({length:30}, (_,i)=>({n:i+1, status: i<3?'claimed': i===3?'active':'pending'})),
-  },
-  {
-    id:'embertail-sso-1', token:'$EMBER', name:'Embertail', creator:'0x1eD7...88c3', creatorType:'Holder',
-    contract:'0x6E7F8091A2B3C4D5E6F708192A3B4C5D6E7F8091',
-    keyword:'$EMBER', locked: 5600000, denom:'$EMBER', epochLen:'7D', size:70, duration:'28D', openedDaysAgo:20,
-    epochs:[
-      {n:1, status:'claimed'}, {n:2, status:'claimed'}, {n:3, status:'claimable'}, {n:4, status:'pending'},
-    ],
-  },
-  {
-    id:'driftless-sso-1', token:'$DRIFT', name:'Driftless', creator:'0x8f3D...b2A1', creatorType:'Dev',
-    contract:'0x7F8091A2B3C4D5E6F708192A3B4C5D6E7F80912A',
-    keyword:'#DriftlessFam', locked: 1800000, denom:'USDC', epochLen:'24H', size:30, duration:'14D', openedDaysAgo:0,
-    epochs: Array.from({length:14}, (_,i)=>({n:i+1, status:'pending'})),
-  },
-  {
-    id:'pixelwolf-sso-1', token:'$PXWOLF', name:'Pixel Wolf', creator:'0x9b3D...7aF2', creatorType:'Holder',
-    contract:'0x8091A2B3C4D5E6F708192A3B4C5D6E7F80912A3B',
-    keyword:'$PXWOLF', locked: 2600000, denom:'$PXWOLF', epochLen:'7D', size:45, duration:'21D', openedDaysAgo:0,
-    epochs:[
-      {n:1, status:'pending'}, {n:2, status:'pending'}, {n:3, status:'pending'},
-    ],
-  },
-  {
-    id:'feralcat-sso-1', token:'$FERAL', name:'Feral Cat', creator:'0x2fA8...11c0', creatorType:'Dev',
-    contract:'0x91A2B3C4D5E6F708192A3B4C5D6E7F80912A3B4C',
-    keyword:'#FeralCatArmy', locked: 700000, denom:'$FERAL', epochLen:'24H', size:20, duration:'10D', openedDaysAgo:0,
-    epochs: Array.from({length:10}, (_,i)=>({n:i+1, status:'pending'})),
-  },
-];
-
-// Mock "my activity" for the connected wallet/X account (0x8f3D...b2A1 / @you_onchain,
-// see useMockUser below). Cross-referenced to real campaign ids so the profile dashboard
-// and each campaign's "Your position" panel always agree with each other.
-const MY_SHO_POSITIONS = [
-  {campaignId:'moonpup-sho-1', rank:1, volume:42500, claimable:true, claimAmount:3200, claimUsd:3200},
-  {campaignId:'embertail-sho-1', rank:2, volume:61200, claimable:true, claimAmount:2450, claimUsd:5480},
-  {campaignId:'kaiju-sho-1', rank:4, volume:9800, claimable:false, claimAmount:0, claimUsd:0},
-  {campaignId:'northstar-sho-1', rank:11, volume:1200, claimable:false, claimAmount:0, claimUsd:0},
-];
-const MY_SSO_POSITIONS = [
-  {campaignId:'embertail-sso-1', rank:3, score:5400, claimable:true, claimAmount:380, claimUsd:851},
-  {campaignId:'snackpack-sso-1', rank:1, score:12400, claimable:false, claimAmount:0, claimUsd:0},
-  {campaignId:'kaiju-sso-1', rank:7, score:1200, claimable:false, claimAmount:0, claimUsd:0},
-  {campaignId:'pixelwolf-sso-1', rank:15, score:90, claimable:false, claimAmount:0, claimUsd:0},
-];
-const MY_CREATED_SHO = ['catnip-sho-1'];
-const MY_CREATED_SSO = ['driftless-sso-1'];
-const CLAIM_HISTORY = [
-  {date:'2026-08-30', kind:'sho', campaignId:'kaiju-sho-1', label:'100K mcap tier', amount:840, token:'$KAIJU', usd:1720},
-  {date:'2026-08-24', kind:'sso', campaignId:'embertail-sso-1', label:'Epoch 1', amount:210, token:'$EMBER', usd:940},
-  {date:'2026-08-20', kind:'sso', campaignId:'embertail-sso-1', label:'Epoch 2', amount:265, token:'$EMBER', usd:1185},
-  {date:'2026-08-15', kind:'sho', campaignId:'moonpup-sho-1', label:'100K mcap tier', amount:1180, token:'USDC', usd:1180},
-  {date:'2026-08-10', kind:'sso', campaignId:'kaiju-sso-1', label:'Epoch 1', amount:340, token:'$KAIJU', usd:700},
-  {date:'2026-08-02', kind:'sho', campaignId:'northstar-sho-1', label:'100K mcap tier', amount:640, token:'$NORTH', usd:410},
-];
-
-function leaderboard(seedBase, n, scoreLabel){
-  return Array.from({length:n}, (_,i)=>{
-    const val = Math.round((n-i)*1000*seededShare(seedBase+i)*(1+ (n-i)/n));
-    return {
-      rank:i+1,
-      who: scoreLabel==='volume' ? WALLETS[i%WALLETS.length] : XHANDLES[i%XHANDLES.length],
-      value: val,
-    };
-  });
-}
+// Per-wallet/per-X-account activity (positions, claims, created campaigns) now comes from
+// GET /wallets/:address/{standings,claims,created} -- see useWalletStandings/useWalletClaims/
+// useWalletCreated further down, used directly in SHODetail/SSODetail/Profile. A live
+// leaderboard preview comes bundled into each campaign's own detail response
+// (topLeaderboard, up to 10 entries) rather than a locally-fabricated one.
 
 /* ===================== SHARED HELPERS ===================== */
 
@@ -762,6 +758,14 @@ function fmtNum(n){
   return String(Math.round(n));
 }
 function fmtUSD(n){ return '$'+fmtNum(n); }
+// API amounts (c.locked, wallet standings/claims amounts) are raw on-chain integers as
+// strings, 18 decimals assumed throughout this project (same assumption api/src/shoRoutes.js
+// itself makes for totalSupply -- see its tokenTwapMcap). Converts to a plain JS number for
+// display via fmtNum/fmtUSD; fine at this scale, not used for anything that computes a claim.
+function fmtTokenAmount(raw){
+  if(raw==null) return 0;
+  try { return Number(window.ethers.formatUnits(raw, 18)); } catch(e){ return 0; }
+}
 function pctToNext(mcap, tiers){
   const next = tiers.find(t=>t.value>mcap) || tiers[tiers.length-1];
   const prevIdx = tiers.indexOf(next)-1;
@@ -792,16 +796,95 @@ function useHashRoute(){
   return [route, go];
 }
 
-function useMockUser(){
-  const [wallet,setWallet] = useState(()=> localStorage.getItem('so_wallet') || null);
-  const [xhandle,setXhandle] = useState(()=> localStorage.getItem('so_x') || null);
-  const connectWallet = ()=>{ const w='0x8f3D...b2A1'; setWallet(w); localStorage.setItem('so_wallet', w); };
-  const connectX = ()=>{ const h='@you_onchain'; setXhandle(h); localStorage.setItem('so_x', h); };
-  const disconnect = ()=>{
+// Real wallet connection (window.ethereum / EIP-1193, e.g. MetaMask) plus the wallet's actual
+// on-chain X-handle link (Registry.handleOf) -- replaces useMockUser's instant fake connect.
+// xhandle is deliberately never cached in localStorage: Registry.handleOf(wallet) is the one
+// source of truth (PRD §12.3-12.4), so this always re-reads it rather than risk showing a
+// stale cached handle after a wallet switch or a fresh registerHandle() call elsewhere.
+function useWallet(){
+  const [wallet, setWallet] = useState(null);
+  const [xhandle, setXhandle] = useState(null);
+  const [connecting, setConnecting] = useState(false);
+  const [chainOk, setChainOk] = useState(true);
+
+  const refreshXHandle = useCallback(async (addr)=>{
+    const target = addr || wallet;
+    if(!target){ setXhandle(null); return; }
+    try {
+      const registry = new window.ethers.Contract(SCP_CONFIG.REGISTRY_ADDRESS, REGISTRY_ABI, readProvider());
+      const handle = await registry.handleOf(target);
+      setXhandle(handle && handle.length ? handle : null);
+    } catch(e){
+      console.error('failed to read Registry.handleOf', e);
+    }
+  }, [wallet]);
+
+  const applyAccounts = useCallback((accounts)=>{
+    const addr = accounts && accounts[0] ? window.ethers.getAddress(accounts[0]) : null;
+    setWallet(addr);
+    if(addr) refreshXHandle(addr); else setXhandle(null);
+  }, [refreshXHandle]);
+
+  useEffect(()=>{
+    const {ethereum} = window;
+    if(!ethereum) return;
+    // Silent -- eth_accounts never prompts, so this only restores a connection the site
+    // already has permission for (e.g. after a reload), it never pops MetaMask on its own.
+    ethereum.request({method:'eth_accounts'}).then(applyAccounts).catch(()=>{});
+    ethereum.request({method:'eth_chainId'}).then(id=> setChainOk(id===CHAIN_ID_HEX)).catch(()=>{});
+    const onAccounts = (accounts)=> applyAccounts(accounts);
+    const onChain = (id)=> setChainOk(id===CHAIN_ID_HEX);
+    ethereum.on && ethereum.on('accountsChanged', onAccounts);
+    ethereum.on && ethereum.on('chainChanged', onChain);
+    return ()=>{
+      ethereum.removeListener && ethereum.removeListener('accountsChanged', onAccounts);
+      ethereum.removeListener && ethereum.removeListener('chainChanged', onChain);
+    };
+    // eslint-disable-next-line
+  }, []);
+
+  const connectWallet = useCallback(async ()=>{
+    const {ethereum} = window;
+    if(!ethereum){
+      alert('No wallet extension found. Install MetaMask (or another EIP-1193 wallet) to continue.');
+      return;
+    }
+    setConnecting(true);
+    try {
+      const accounts = await ethereum.request({method:'eth_requestAccounts'});
+      applyAccounts(accounts);
+      await ensureChain(ethereum);
+      setChainOk(true);
+    } catch(e){
+      console.error(e);
+      alert('Wallet connection failed: '+shortError(e));
+    } finally {
+      setConnecting(false);
+    }
+  }, [applyAccounts]);
+
+  // Kicks off the real OAuth 2.0 (PKCE) redirect to ../registration-service. Requires a
+  // connected wallet since the attestation it comes back with is bound to that address --
+  // callers already gate this behind !!wallet (see Register/SSODetail).
+  const connectX = useCallback(()=>{
+    if(!wallet) return;
+    window.location.href = `${SCP_CONFIG.REGISTRATION_SERVICE_URL}/auth/x/start?wallet=${wallet}`;
+  }, [wallet]);
+
+  const disconnect = useCallback(()=>{
+    // A dapp can't force MetaMask to actually disconnect (no permission-revoke API); this
+    // just forgets the connection locally, matching the mock's own disconnect semantics.
     setWallet(null); setXhandle(null);
-    localStorage.removeItem('so_wallet'); localStorage.removeItem('so_x');
-  };
-  return {wallet, xhandle, connectWallet, connectX, disconnect};
+  }, []);
+
+  const getSigner = useCallback(async ()=>{
+    if(!window.ethereum) throw new Error('no wallet extension found');
+    const provider = new window.ethers.BrowserProvider(window.ethereum);
+    await ensureChain(window.ethereum);
+    return provider.getSigner();
+  }, []);
+
+  return {wallet, xhandle, connecting, chainOk, connectWallet, connectX, disconnect, getSigner, refreshXHandle};
 }
 
 /* ===================== ICONS ===================== */
@@ -841,7 +924,7 @@ const IcoLogout     = p => <Ico {...p} d={<><path d="M9 4H5.5A1.5 1.5 0 0 0 4 5.
 
 function MsIcon({status}){
   if(status==='claimed'||status==='claimable') return <IcoCheckCirc size={15}/>;
-  if(status==='active') return <IcoClock size={15}/>;
+  if(status==='active'||status==='challenge_window') return <IcoClock size={15}/>;
   return <IcoDotted size={15}/>;
 }
 
@@ -951,27 +1034,27 @@ function CampaignCard({c, kind, onOpen}){
   const isSHO = kind==='sho';
   const reached = c.milestones ? c.milestones.filter(m=>m.status!=='pending').length : c.epochs.filter(e=>e.status==='claimed').length;
   const total = c.milestones ? c.milestones.length : c.epochs.length;
-  const pct = isSHO ? pctToNext(c.mcap, campaignTiers(c)).pct : Math.round((c.epochs.filter(e=>e.status!=='pending').length/c.epochs.length)*100);
+  const pct = isSHO ? pctToNext(c.mcap||0, campaignTiers(c)).pct : Math.round((c.epochs.filter(e=>e.status!=='pending').length/c.epochs.length)*100);
   return (
     <div className="camp-card" onClick={onOpen}>
       <div className="camp-card-top">
         <div>
           <div className="ticker">{c.token}</div>
-          <div className="camp-meta">{c.name} &middot; by {c.creatorType}</div>
+          <div className="camp-meta">{c.name}{c.creatorType ? ` · by ${c.creatorType}` : ''}</div>
         </div>
         <Tag kind={isSHO?'sho':'sso'} icon={isSHO?IcoTrendUp:IcoMegaphone}>{isSHO?'SHO':'SSO'}</Tag>
       </div>
       {isSHO ? (
         <>
-          <div className="camp-row"><span>Locked</span><b className="mono">{fmtNum(c.locked)} {c.denom==c.token?c.token:c.denom}</b></div>
-          <div className="camp-row"><span>Mcap</span><b className="mono">{fmtUSD(c.mcap)}</b></div>
+          <div className="camp-row"><span>Locked</span><b className="mono">{fmtNum(fmtTokenAmount(c.locked))} {c.denom==c.token?c.token:c.denom}</b></div>
+          <div className="camp-row"><span>Mcap</span><b className="mono">{c.mcap==null ? 'TWAP pending' : fmtUSD(c.mcap)}</b></div>
           <Meter pct={pct}/>
           <div className="camp-row"><span>Window {c.window} &middot; Top {c.size}</span><span>{c.daysLeft}d left</span></div>
         </>
       ) : (
         <>
           <div className="camp-row"><span>Keyword</span><b className="mono">{c.keyword}</b></div>
-          <div className="camp-row"><span>Locked</span><b className="mono">{fmtNum(c.locked)} {c.denom==c.token?c.token:c.denom}</b></div>
+          <div className="camp-row"><span>Locked</span><b className="mono">{fmtNum(fmtTokenAmount(c.locked))} {c.denom==c.token?c.token:c.denom}</b></div>
           <Meter pct={pct}/>
           <div className="camp-row"><span>Epoch {c.epochLen} &middot; Top {c.size}</span><span>{reached}/{total} epochs run</span></div>
         </>
@@ -988,6 +1071,8 @@ function Toast({msg, onDone}){
 /* ===================== LANDING ===================== */
 
 function Landing({go}){
+  const shoCampaigns = useApiFetch('/sho/campaigns', []);
+  const ssoCampaigns = useApiFetch('/sso/campaigns', []);
   return (
     <div className="page" style={{paddingTop:0}}>
       <div className="wrap hero">
@@ -1012,7 +1097,7 @@ function Landing({go}){
             <div className="stat-group-body">
               <div className="stat-tile"><IcoCoins size={17} style={{color:'var(--accent)'}}/><StatNum value={2.4} format={v=>'$'+v.toFixed(1)+'M'}/><span className="lbl">total reward pool</span></div>
               <div className="stat-tile"><IcoTrophy size={17} style={{color:'var(--accent)'}}/><StatNum value={640} format={v=>'$'+Math.round(v)+'K'}/><span className="lbl">distributed rewards</span></div>
-              <div className="stat-tile"><IcoLayers size={17} style={{color:'var(--accent)'}}/><StatNum value={SHO_CAMPAIGNS.length} format={v=>Math.round(v)}/><span className="lbl">total campaigns</span></div>
+              <div className="stat-tile"><IcoLayers size={17} style={{color:'var(--accent)'}}/><StatNum value={shoCampaigns.data ? shoCampaigns.data.campaigns.length : 0} format={v=>Math.round(v)}/><span className="lbl">total campaigns</span></div>
             </div>
           </div>
           <div className="stat-group">
@@ -1020,11 +1105,11 @@ function Landing({go}){
             <div className="stat-group-body">
               <div className="stat-tile"><IcoCoins size={17} style={{color:'var(--accent)'}}/><StatNum value={890} format={v=>'$'+Math.round(v)+'K'}/><span className="lbl">total reward pool</span></div>
               <div className="stat-tile"><IcoTrophy size={17} style={{color:'var(--accent)'}}/><StatNum value={215} format={v=>'$'+Math.round(v)+'K'}/><span className="lbl">distributed rewards</span></div>
-              <div className="stat-tile"><IcoLayers size={17} style={{color:'var(--accent)'}}/><StatNum value={SSO_CAMPAIGNS.length} format={v=>Math.round(v)}/><span className="lbl">total campaigns</span></div>
+              <div className="stat-tile"><IcoLayers size={17} style={{color:'var(--accent)'}}/><StatNum value={ssoCampaigns.data ? ssoCampaigns.data.campaigns.length : 0} format={v=>Math.round(v)}/><span className="lbl">total campaigns</span></div>
             </div>
           </div>
         </div>
-        <div className="stats-note">Platform figures are illustrative mock data for this prototype, not live.</div>
+        <div className="stats-note">Campaign counts are live from {SCP_CONFIG.CHAIN_NAME}. Reward pool / distributed totals above are still illustrative -- no aggregate-across-campaigns endpoint exists yet.</div>
       </div>
 
       <div className="wrap section">
@@ -1087,8 +1172,8 @@ function Landing({go}){
       </div>
 
       <div className="wrap footer">
-        <span style={{display:'inline-flex',alignItems:'center',gap:6}}><IcoLock size={12}/>Strong Commitment Protocol &middot; prototype, mock data only</span>
-        <span style={{display:'inline-flex',alignItems:'center',gap:6}}><IcoLayers size={12}/>Robinhood Chain &middot; chain ID 4663</span>
+        <span style={{display:'inline-flex',alignItems:'center',gap:6}}><IcoLock size={12}/>Strong Commitment Protocol &middot; live on testnet contracts</span>
+        <span style={{display:'inline-flex',alignItems:'center',gap:6}}><IcoLayers size={12}/>{SCP_CONFIG.CHAIN_NAME} &middot; chain ID {SCP_CONFIG.CHAIN_ID}</span>
       </div>
     </div>
   );
@@ -1100,7 +1185,11 @@ const PAGE_SIZE = 6;
 
 function Discover({kind, go}){
   const isSHO = kind==='sho';
-  const fullList = isSHO ? SHO_CAMPAIGNS : SSO_CAMPAIGNS;
+  const {loading, data, error} = useApiFetch(`/${kind}/campaigns`, [kind]);
+  const fullList = useMemo(()=>{
+    if(!data) return [];
+    return data.campaigns.map(isSHO ? normalizeShoCampaign : normalizeSsoCampaign);
+  }, [data, isSHO]);
   const [filter,setFilter] = useState('all');
   const [page,setPage] = useState(0);
 
@@ -1133,7 +1222,11 @@ function Discover({kind, go}){
             <button key={f} className={`pill-btn ${filter===f?'active':''}`} onClick={()=>setFilter(f)}>{f==='all'?'All campaigns':f==='active'?'Milestone active':'Recently opened'}</button>
           ))}
         </div>
-        {list.length===0 ? (
+        {loading ? (
+          <div className="empty-state"><h3>Loading campaigns&hellip;</h3><p>Reading {isSHO?'SHO':'SSO'} campaigns from the API.</p></div>
+        ) : error ? (
+          <div className="empty-state"><h3>Couldn&rsquo;t load campaigns</h3><p>{error}</p></div>
+        ) : list.length===0 ? (
           <div className="empty-state">
             <h3>No campaigns match this filter</h3>
             <p>{filter==='active' ? "None of the current campaigns have a live milestone right now." : "Nothing opened in the last "+NEW_THRESHOLD_DAYS+" days."} Try &ldquo;All campaigns&rdquo; instead.</p>
@@ -1161,21 +1254,46 @@ function Discover({kind, go}){
 /* ===================== SHO DETAIL ===================== */
 
 function SHODetail({id, go, user, notify}){
-  const c = SHO_CAMPAIGNS.find(x=>x.id===id);
-  const [claimed,setClaimed] = useState({});
-  const board = useMemo(()=> c ? leaderboard(id.length, c.size>50?50:c.size, 'volume') : [], [id, c]);
-  if(!c) return <EmptyRoute go={go}/>;
-  const tiers = campaignTiers(c);
-  const {next, pct} = pctToNext(c.mcap, tiers);
-  const allTiersReached = c.mcap >= tiers[tiers.length-1].value;
-  const profile = TOKEN_REGISTRY[c.contract];
-  const myPos = MY_SHO_POSITIONS.find(p=>p.campaignId===c.id);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const {loading, data, error} = useApiFetch(`/sho/campaigns/${id}`, [id, refreshTick]);
+  const c = useMemo(()=> data ? normalizeShoCampaign(data) : null, [data]);
+  const tokenProfile = useApiFetch(c ? `/tokens/${c.tokenAddress}` : null, [c && c.tokenAddress]);
+  const standings = useApiFetch(user.wallet ? `/wallets/${user.wallet}/standings` : null, [user.wallet, refreshTick]);
+  const claims = useApiFetch(user.wallet ? `/wallets/${user.wallet}/claims` : null, [user.wallet, refreshTick]);
+  const [claiming, setClaiming] = useState(null);
 
-  const doClaim = (tier)=>{
+  if(loading) return <div className="page"><div className="wrap"><div className="empty-state"><h3>Loading campaign&hellip;</h3></div></div></div>;
+  if(error || !c) return <EmptyRoute go={go}/>;
+
+  const tiers = campaignTiers(c);
+  const {next, pct} = pctToNext(c.mcap||0, tiers);
+  const allTiersReached = c.mcap!=null && c.mcap >= tiers[tiers.length-1].value;
+  const profile = tokenProfile.data;
+  const myStanding = standings.data ? standings.data.sho.find(s=>s.campaignAddress.toLowerCase()===c.id.toLowerCase()) : null;
+  const myClaims = claims.data ? claims.data.claims.filter(cl=>cl.factory==='sho' && cl.campaignAddress.toLowerCase()===c.id.toLowerCase()) : [];
+  const anyOpen = c.milestones.some(m=>m.status==='pending'||m.status==='active');
+
+  const doClaim = async (m)=>{
     if(!user.wallet){ notify('Connect a wallet first to claim.'); return; }
-    if(!(myPos && myPos.claimable)){ notify("You're not eligible for this tier — only leaderboard-ranked wallets can claim."); return; }
-    setClaimed(p=>({...p,[tier]:true}));
-    notify(`Claim submitted for the ${tier} tier (mock).`);
+    const mine = myClaims.find(cl=>cl.index===m.index);
+    if(!mine){ notify("You're not on this milestone's leaderboard snapshot -- nothing to claim."); return; }
+    setClaiming(m.index);
+    try {
+      const res = await fetch(`${SCP_CONFIG.API_BASE_URL}/campaigns/${c.id}/claim-proof?wallet=${user.wallet}&index=${m.index}`);
+      const body = await res.json();
+      if(!res.ok) throw new Error(body.error || 'failed to fetch claim proof');
+      const signer = await user.getSigner();
+      const campaign = new window.ethers.Contract(c.id, CAMPAIGN_ABI, signer);
+      const tx = await campaign.claim(m.index, body.amount, body.proof);
+      notify('Claim submitted -- waiting for confirmation...');
+      await tx.wait();
+      notify(`Claimed the ${m.tier} tier.`);
+      setRefreshTick(t=>t+1);
+    } catch(e){
+      notify('Claim failed: '+shortError(e));
+    } finally {
+      setClaiming(null);
+    }
   };
 
   return (
@@ -1185,9 +1303,9 @@ function SHODetail({id, go, user, notify}){
         <div className="page-head">
           <div>
             <h1>{c.token} <span style={{color:'var(--text-faint)'}}>&middot; SHO</span></h1>
-            <div className="camp-meta">Opened by {c.creatorType} {c.creator} &middot; {c.window} window &middot; Top {c.size} &middot; {c.duration} duration</div>
+            <div className="camp-meta">Creator {shortAddr(c.creator)} &middot; {c.window} window &middot; Top {c.size} &middot; {c.duration} duration</div>
           </div>
-          <Tag kind="sho">Active</Tag>
+          <Tag kind="sho">{anyOpen ? 'Active' : 'Completed'}</Tag>
         </div>
 
         <div className="detail-grid">
@@ -1195,31 +1313,36 @@ function SHODetail({id, go, user, notify}){
             <div className="panel">
               <div className="eyebrow" style={{marginBottom:10,display:'flex',alignItems:'center',gap:6}}><IcoTarget size={13}/>Milestone progress</div>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
-                <span className="mono" style={{fontSize:22,fontWeight:600}}>{fmtUSD(c.mcap)}</span>
+                <span className="mono" style={{fontSize:22,fontWeight:600}}>{c.mcap==null ? 'TWAP pending' : fmtUSD(c.mcap)}</span>
                 <span className="camp-meta">{allTiersReached ? 'all funded tiers reached' : `next: ${next.label}`}</span>
               </div>
               <Meter pct={pct}/>
               <div className="milestone-list" style={{marginTop:20}}>
-                {c.milestones.map(m=>(
-                  <div key={m.tier} className={`milestone-row ${m.status==='claimed'?'reached':m.status==='claimable'?'claimable':m.status==='active'?'reached':''}`}>
-                    <div className="ms-icon"><MsIcon status={m.status}/></div>
+                {c.milestones.map(m=>{
+                  const mine = myClaims.find(cl=>cl.index===m.index);
+                  const walletStatus = mine ? mine.status : m.status; // per-wallet when we have it
+                  return (
+                  <div key={m.index} className={`milestone-row ${walletStatus==='claimed'?'reached':walletStatus==='claimable'?'claimable':walletStatus==='active'?'reached':''}`}>
+                    <div className="ms-icon"><MsIcon status={walletStatus}/></div>
                     <div className="ms-body">
                       <div className="ms-title">{m.tier} mcap &middot; {m.bps/100}% of pool</div>
                       <div className="ms-sub">
                         {m.status==='pending' && 'Not yet reached'}
                         {m.status==='active' && 'Currently the closest tier to being reached'}
-                        {m.status==='claimed' && (claimed[m.tier] ? 'You claimed this tier' : 'Reached &middot; distributed to top traders')}
-                        {m.status==='claimable' && 'Challenge window cleared &middot; claim open'}
+                        {m.status==='challenge_window' && 'Reached · 24h challenge window before claims open'}
+                        {m.status==='claimed' && (walletStatus==='claimed' ? 'You claimed this tier' : 'Reached · distributed to top traders')}
+                        {m.status==='claimable' && 'Challenge window cleared · claim open'}
                       </div>
                     </div>
-                    {m.status==='claimable' && !claimed[m.tier] && (
-                      (!user.wallet || (myPos && myPos.claimable))
-                        ? <Btn size="sm" icon={IcoCheckCirc} onClick={()=>doClaim(m.tier)}>Claim</Btn>
-                        : <Tag kind="neutral">Not eligible</Tag>
+                    {m.status==='claimable' && walletStatus!=='claimed' && (
+                      mine
+                        ? <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===m.index} onClick={()=>doClaim(m)}>{claiming===m.index?'Claiming…':'Claim'}</Btn>
+                        : (user.wallet ? <Tag kind="neutral">Not eligible</Tag> : <Btn size="sm" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>)
                     )}
-                    {m.status==='claimable' && claimed[m.tier] && <Tag kind="sho" icon={IcoCheckCirc}>Claimed</Tag>}
+                    {walletStatus==='claimed' && <Tag kind="sho" icon={IcoCheckCirc}>Claimed</Tag>}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
@@ -1229,21 +1352,24 @@ function SHODetail({id, go, user, notify}){
                 <table className="lb-table">
                   <thead><tr><th>#</th><th>Wallet</th><th>Net-buy volume</th><th>Share</th></tr></thead>
                   <tbody>
-                    {board.slice(0,10).map((r,i)=>{
-                      const isMe = !!(myPos && user.wallet && r.rank===myPos.rank);
+                    {(c.topLeaderboard||[]).slice(0,10).map((r,i)=>{
+                      const isMe = !!(user.wallet && r.wallet.toLowerCase()===user.wallet.toLowerCase());
                       return (
                         <tr key={i} className={isMe ? 'me':''}>
                           <td className="rank">{r.rank}</td>
-                          <td className="addr mono">{isMe ? user.wallet : r.who}</td>
-                          <td className="mono">${fmtNum(isMe ? myPos.volume : r.value)}</td>
+                          <td className="addr mono">{isMe ? user.wallet : shortAddr(r.wallet)}</td>
+                          <td className="mono">${fmtNum(fmtTokenAmount(r.score))}</td>
                           <td className="bar-cell"><div className="mini-bar"><div style={{width:(100-i*8)+'%'}}></div></div></td>
                         </tr>
                       );
                     })}
+                    {(!c.topLeaderboard || c.topLeaderboard.length===0) && (
+                      <tr><td colSpan="4" className="camp-meta" style={{padding:'12px 0'}}>No trades in this window yet.</td></tr>
+                    )}
                   </tbody>
                 </table>
-                {myPos && user.wallet && myPos.rank>10 &&
-                  <div className="camp-meta" style={{marginTop:10}}>Your rank: #{myPos.rank} &middot; ${fmtNum(myPos.volume)} net-buy volume (outside top 10 shown above)</div>}
+                {myStanding && myStanding.rank>10 &&
+                  <div className="camp-meta" style={{marginTop:10}}>Your rank: #{myStanding.rank} &middot; ${fmtNum(fmtTokenAmount(myStanding.score))} net-buy volume (outside top 10 shown above)</div>}
               </div>
             </div>
           </div>
@@ -1254,31 +1380,30 @@ function SHODetail({id, go, user, notify}){
               <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
                 <div className="token-mark">{c.token.replace('$','').slice(0,1)}</div>
                 <div>
-                  <div style={{fontWeight:600,fontSize:14}}>{profile ? profile.name : c.name}</div>
+                  <div style={{fontWeight:600,fontSize:14}}>{(profile && profile.name) || c.name}</div>
                   <div className="mono" style={{fontSize:12,color:'var(--text-dim)'}}>{c.token}</div>
                 </div>
               </div>
-              <div className="kv"><span className="k"><IcoGlobe size={13}/> Website</span><span className="v">{profile ? profile.website : '—'}</span></div>
-              <div className="kv"><span className="k"><IcoX size={13}/> Twitter / X</span><span className="v">{profile ? profile.twitter : '—'}</span></div>
-              <div className="kv"><span className="k">Current mcap</span><span className="v">{fmtUSD(c.mcap)}</span></div>
-              <div className="kv"><span className="k">ATH mcap</span><span className="v">{profile ? fmtUSD(profile.ath) : '—'}</span></div>
-              <div className="kv"><span className="k"><IcoUsers size={13}/> Holders</span><span className="v">{profile ? profile.holders.toLocaleString() : '—'}</span></div>
-              <div className="kv"><span className="k">Contract</span><span className="v mono" style={{fontSize:11}}>{c.contract.slice(0,6)}...{c.contract.slice(-4)}</span></div>
+              <div className="kv"><span className="k"><IcoGlobe size={13}/> Website</span><span className="v">{(profile && profile.website) || '—'}</span></div>
+              <div className="kv"><span className="k"><IcoX size={13}/> Twitter / X</span><span className="v">{(profile && profile.twitter) || '—'}</span></div>
+              <div className="kv"><span className="k">Current mcap</span><span className="v">{c.mcap==null ? 'TWAP pending' : fmtUSD(c.mcap)}</span></div>
+              <div className="kv"><span className="k">ATH mcap</span><span className="v" title="Not tracked yet -- no historical mcap index exists">—</span></div>
+              <div className="kv"><span className="k"><IcoUsers size={13}/> Holders</span><span className="v">{(profile && profile.holders!=null) ? profile.holders.toLocaleString() : '—'}</span></div>
+              <div className="kv"><span className="k">Contract</span><span className="v mono" style={{fontSize:11}}><a href={explorerAddressUrl(c.tokenAddress)} target="_blank" rel="noopener noreferrer">{shortAddr(c.tokenAddress)}</a></span></div>
             </div>
 
             <div className="panel">
               <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoWallet size={13}/>Your position</div>
               {user.wallet ? (
-                myPos ? (
+                myStanding ? (
                   <div className="you-card">
-                    <div className="kv"><span className="k">Wallet</span><span className="v">{user.wallet}</span></div>
-                    <div className="kv"><span className="k">Rank this window</span><span className="v">#{myPos.rank}</span></div>
-                    <div className="kv"><span className="k">Net-buy volume</span><span className="v">{fmtUSD(myPos.volume)}</span></div>
-                    <div className="kv"><span className="k">Claimable now</span><span className="v">{myPos.claimable ? `${fmtNum(myPos.claimAmount)} ${c.denom}` : '—'}</span></div>
+                    <div className="kv"><span className="k">Wallet</span><span className="v">{shortAddr(user.wallet)}</span></div>
+                    <div className="kv"><span className="k">Rank this window</span><span className="v">#{myStanding.rank}</span></div>
+                    <div className="kv"><span className="k">Net-buy volume</span><span className="v">{fmtUSD(fmtTokenAmount(myStanding.score))}</span></div>
                   </div>
                 ) : (
                   <div className="you-card">
-                    <div className="you-empty">You haven't traded {c.token} yet &mdash; buy in this window to appear on the leaderboard.</div>
+                    <div className="you-empty">You haven't traded {c.token} in the current window yet &mdash; buy to appear on the leaderboard.</div>
                   </div>
                 )
               ) : (
@@ -1290,13 +1415,14 @@ function SHODetail({id, go, user, notify}){
             </div>
             <div className="panel">
               <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoInfo size={13}/>Campaign details</div>
-              <div className="kv"><span className="k">Total locked</span><span className="v">{fmtNum(c.locked)} {c.token}</span></div>
+              <div className="kv"><span className="k">Total locked</span><span className="v">{fmtNum(fmtTokenAmount(c.locked))} {c.denom}</span></div>
               <div className="kv"><span className="k">Reward denomination</span><span className="v">{c.denom}</span></div>
               <div className="kv"><span className="k">Leaderboard window</span><span className="v">{c.window}</span></div>
               <div className="kv"><span className="k">Leaderboard size</span><span className="v">Top {c.size}</span></div>
               <div className="kv"><span className="k">Campaign duration</span><span className="v">{c.duration}</span></div>
               <div className="kv"><span className="k">Time remaining</span><span className="v">{c.daysLeft}d</span></div>
               <div className="kv"><span className="k">Protocol fee</span><span className="v">0.5% (taken at open)</span></div>
+              <div className="kv"><span className="k">Campaign contract</span><span className="v mono" style={{fontSize:11}}><a href={explorerAddressUrl(c.id)} target="_blank" rel="noopener noreferrer">{shortAddr(c.id)}</a></span></div>
             </div>
           </div>
         </div>
@@ -1308,21 +1434,47 @@ function SHODetail({id, go, user, notify}){
 /* ===================== SSO DETAIL ===================== */
 
 function SSODetail({id, go, user, notify}){
-  const c = SSO_CAMPAIGNS.find(x=>x.id===id);
-  const [claimed,setClaimed] = useState({});
-  const board = useMemo(()=> c ? leaderboard(id.length+3, c.size>50?50:c.size, 'engagement') : [], [id, c]);
-  if(!c) return <EmptyRoute go={go}/>;
+  const [refreshTick, setRefreshTick] = useState(0);
+  const {loading, data, error} = useApiFetch(`/sso/campaigns/${id}`, [id, refreshTick]);
+  const c = useMemo(()=> data ? normalizeSsoCampaign(data) : null, [data]);
+  const tokenProfile = useApiFetch(c ? `/tokens/${c.tokenAddress}` : null, [c && c.tokenAddress]);
+  const standings = useApiFetch(user.wallet ? `/wallets/${user.wallet}/standings` : null, [user.wallet, refreshTick]);
+  const claims = useApiFetch(user.wallet ? `/wallets/${user.wallet}/claims` : null, [user.wallet, refreshTick]);
+  const [claiming, setClaiming] = useState(null);
+
+  if(loading) return <div className="page"><div className="wrap"><div className="empty-state"><h3>Loading campaign&hellip;</h3></div></div></div>;
+  if(error || !c) return <EmptyRoute go={go}/>;
+
   const activeEpoch = c.epochs.find(e=>e.status==='active');
   const epochLabel = activeEpoch ? `Epoch ${activeEpoch.n} of ${c.epochs.length}`
     : c.epochs.every(e=>e.status==='pending') ? 'Not started yet' : 'Between epochs';
-  const profile = TOKEN_REGISTRY[c.contract];
-  const myPos = MY_SSO_POSITIONS.find(p=>p.campaignId===c.id);
-  const doClaim = (n)=>{
-    if(!user.xhandle){ notify('Register your X account first to claim.'); return; }
-    if(!(myPos && myPos.claimable)){ notify("You're not eligible for this epoch — only leaderboard-ranked accounts can claim."); return; }
-    setClaimed(p=>({...p,[n]:true}));
-    notify(`Claim submitted for epoch ${n} (mock).`);
+  const profile = tokenProfile.data;
+  const myStanding = standings.data ? standings.data.sso.find(s=>s.campaignAddress.toLowerCase()===c.id.toLowerCase()) : null;
+  const myClaims = claims.data ? claims.data.claims.filter(cl=>cl.factory==='sso' && cl.campaignAddress.toLowerCase()===c.id.toLowerCase()) : [];
+
+  const doClaim = async (e)=>{
+    if(!user.wallet){ notify('Connect a wallet first to claim.'); return; }
+    const mine = myClaims.find(cl=>cl.index===e.index);
+    if(!mine){ notify("You're not on this epoch's leaderboard snapshot -- nothing to claim."); return; }
+    setClaiming(e.index);
+    try {
+      const res = await fetch(`${SCP_CONFIG.API_BASE_URL}/campaigns/${c.id}/claim-proof?wallet=${user.wallet}&index=${e.index}`);
+      const body = await res.json();
+      if(!res.ok) throw new Error(body.error || 'failed to fetch claim proof');
+      const signer = await user.getSigner();
+      const campaign = new window.ethers.Contract(c.id, CAMPAIGN_ABI, signer);
+      const tx = await campaign.claim(e.index, body.amount, body.proof);
+      notify('Claim submitted -- waiting for confirmation...');
+      await tx.wait();
+      notify(`Claimed epoch ${e.n}.`);
+      setRefreshTick(t=>t+1);
+    } catch(err){
+      notify('Claim failed: '+shortError(err));
+    } finally {
+      setClaiming(null);
+    }
   };
+
   return (
     <div className="page">
       <div className="wrap">
@@ -1330,7 +1482,7 @@ function SSODetail({id, go, user, notify}){
         <div className="page-head">
           <div>
             <h1>{c.token} <span style={{color:'var(--text-faint)'}}>&middot; SSO</span></h1>
-            <div className="camp-meta">Opened by {c.creatorType} {c.creator} &middot; keyword <b className="mono">{c.keyword}</b> &middot; epoch {c.epochLen}</div>
+            <div className="camp-meta">Creator {shortAddr(c.creator)} &middot; keyword <b className="mono">{c.keyword}</b> &middot; epoch {c.epochLen}</div>
           </div>
           <Tag kind="sso" icon={IcoCalendar}>{epochLabel}</Tag>
         </div>
@@ -1353,25 +1505,30 @@ function SSODetail({id, go, user, notify}){
                 {c.epochs.every(e=>e.status==='pending') && (
                   <div className="you-empty">No epochs have closed yet &mdash; epoch 1 is still ahead.</div>
                 )}
-                {c.epochs.filter(e=>e.status!=='pending').slice(-4).map(e=>(
-                  <div key={e.n} className={`milestone-row ${e.status==='claimed'?'reached':e.status==='claimable'?'claimable':e.status==='active'?'reached':''}`}>
-                    <div className="ms-icon"><MsIcon status={e.status}/></div>
+                {c.epochs.filter(e=>e.status!=='pending').slice(-4).map(e=>{
+                  const mine = myClaims.find(cl=>cl.index===e.index);
+                  const walletStatus = mine ? mine.status : e.status;
+                  return (
+                  <div key={e.n} className={`milestone-row ${walletStatus==='claimed'?'reached':walletStatus==='claimable'?'claimable':walletStatus==='active'?'reached':''}`}>
+                    <div className="ms-icon"><MsIcon status={walletStatus}/></div>
                     <div className="ms-body">
                       <div className="ms-title">Epoch {e.n} &middot; {Math.round(10000/c.epochs.length)/100}% of pool</div>
                       <div className="ms-sub">
-                        {e.status==='active' && 'In progress &middot; scoring live posts now'}
-                        {e.status==='claimable' && 'Challenge window cleared &middot; claim open'}
-                        {e.status==='claimed' && (claimed[e.n] ? 'You claimed this epoch' : 'Closed &middot; distributed to top accounts')}
+                        {e.status==='active' && 'In progress · scoring live posts now'}
+                        {e.status==='challenge_window' && 'Closed · 24h challenge window before claims open'}
+                        {e.status==='claimable' && 'Challenge window cleared · claim open'}
+                        {e.status==='claimed' && (walletStatus==='claimed' ? 'You claimed this epoch' : 'Closed · distributed to top accounts')}
                       </div>
                     </div>
-                    {e.status==='claimable' && !claimed[e.n] && (
-                      (!user.xhandle || (myPos && myPos.claimable))
-                        ? <Btn size="sm" icon={IcoCheckCirc} onClick={()=>doClaim(e.n)}>Claim</Btn>
-                        : <Tag kind="neutral">Not eligible</Tag>
+                    {e.status==='claimable' && walletStatus!=='claimed' && (
+                      mine
+                        ? <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===e.index} onClick={()=>doClaim(e)}>{claiming===e.index?'Claiming…':'Claim'}</Btn>
+                        : (user.wallet ? <Tag kind="neutral">Not eligible</Tag> : <Btn size="sm" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>)
                     )}
-                    {e.status==='claimable' && claimed[e.n] && <Tag kind="sso" icon={IcoCheckCirc}>Claimed</Tag>}
+                    {walletStatus==='claimed' && <Tag kind="sso" icon={IcoCheckCirc}>Claimed</Tag>}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
@@ -1381,21 +1538,24 @@ function SSODetail({id, go, user, notify}){
                 <table className="lb-table">
                   <thead><tr><th>#</th><th>Account</th><th>Score</th><th>Share</th></tr></thead>
                   <tbody>
-                    {board.slice(0,10).map((r,i)=>{
-                      const isMe = !!(myPos && user.xhandle && r.rank===myPos.rank);
+                    {(c.topLeaderboard||[]).slice(0,10).map((r,i)=>{
+                      const isMe = !!(user.wallet && r.wallet.toLowerCase()===user.wallet.toLowerCase());
                       return (
                         <tr key={i} className={isMe ? 'me':''}>
                           <td className="rank">{r.rank}</td>
-                          <td className="addr mono">{isMe ? user.xhandle : r.who}</td>
-                          <td className="mono">{fmtNum(isMe ? myPos.score : r.value)}</td>
+                          <td className="addr mono">{isMe ? (user.xhandle || shortAddr(user.wallet)) : shortAddr(r.wallet)}</td>
+                          <td className="mono">{fmtNum(r.score)}</td>
                           <td className="bar-cell"><div className="mini-bar"><div style={{width:(100-i*8)+'%'}}></div></div></td>
                         </tr>
                       );
                     })}
+                    {(!c.topLeaderboard || c.topLeaderboard.length===0) && (
+                      <tr><td colSpan="4" className="camp-meta" style={{padding:'12px 0'}}>{c.currentEpochIndex==null ? 'No epoch is currently open.' : 'No scored posts yet this epoch.'}</td></tr>
+                    )}
                   </tbody>
                 </table>
-                {myPos && user.xhandle && myPos.rank>10 &&
-                  <div className="camp-meta" style={{marginTop:10}}>Your rank: #{myPos.rank} &middot; {fmtNum(myPos.score)} engagement score (outside top 10 shown above)</div>}
+                {myStanding && myStanding.rank>10 &&
+                  <div className="camp-meta" style={{marginTop:10}}>Your rank: #{myStanding.rank} &middot; {fmtNum(myStanding.score)} engagement score (outside top 10 shown above)</div>}
               </div>
             </div>
           </div>
@@ -1406,30 +1566,29 @@ function SSODetail({id, go, user, notify}){
               <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
                 <div className="token-mark">{c.token.replace('$','').replace('#','').slice(0,1)}</div>
                 <div>
-                  <div style={{fontWeight:600,fontSize:14}}>{profile ? profile.name : c.name}</div>
+                  <div style={{fontWeight:600,fontSize:14}}>{(profile && profile.name) || c.name}</div>
                   <div className="mono" style={{fontSize:12,color:'var(--text-dim)'}}>{c.token}</div>
                 </div>
               </div>
-              <div className="kv"><span className="k"><IcoGlobe size={13}/> Website</span><span className="v">{profile ? profile.website : '—'}</span></div>
-              <div className="kv"><span className="k"><IcoX size={13}/> Twitter / X</span><span className="v">{profile ? profile.twitter : '—'}</span></div>
-              <div className="kv"><span className="k">Current mcap</span><span className="v">{profile ? fmtUSD(profile.mcap) : '—'}</span></div>
-              <div className="kv"><span className="k">ATH mcap</span><span className="v">{profile ? fmtUSD(profile.ath) : '—'}</span></div>
-              <div className="kv"><span className="k"><IcoUsers size={13}/> Holders</span><span className="v">{profile ? profile.holders.toLocaleString() : '—'}</span></div>
-              <div className="kv"><span className="k">Contract</span><span className="v mono" style={{fontSize:11}}>{c.contract.slice(0,6)}...{c.contract.slice(-4)}</span></div>
+              <div className="kv"><span className="k"><IcoGlobe size={13}/> Website</span><span className="v">{(profile && profile.website) || '—'}</span></div>
+              <div className="kv"><span className="k"><IcoX size={13}/> Twitter / X</span><span className="v">{(profile && profile.twitter) || '—'}</span></div>
+              <div className="kv"><span className="k">Current mcap</span><span className="v">{(profile && profile.mcap!=null) ? fmtUSD(profile.mcap) : 'TWAP pending'}</span></div>
+              <div className="kv"><span className="k">ATH mcap</span><span className="v" title="Not tracked yet -- no historical mcap index exists">—</span></div>
+              <div className="kv"><span className="k"><IcoUsers size={13}/> Holders</span><span className="v">{(profile && profile.holders!=null) ? profile.holders.toLocaleString() : '—'}</span></div>
+              <div className="kv"><span className="k">Contract</span><span className="v mono" style={{fontSize:11}}><a href={explorerAddressUrl(c.tokenAddress)} target="_blank" rel="noopener noreferrer">{shortAddr(c.tokenAddress)}</a></span></div>
             </div>
             <div className="panel">
               <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoX size={13}/>Your position</div>
               {user.xhandle ? (
-                myPos ? (
+                myStanding ? (
                   <div className="you-card">
                     <div className="kv"><span className="k">X account</span><span className="v">{user.xhandle}</span></div>
-                    <div className="kv"><span className="k">Rank this epoch</span><span className="v">#{myPos.rank}</span></div>
-                    <div className="kv"><span className="k">Engagement score</span><span className="v">{fmtNum(myPos.score)}</span></div>
-                    <div className="kv"><span className="k">Claimable now</span><span className="v">{myPos.claimable ? `${fmtNum(myPos.claimAmount)} ${c.denom}` : '—'}</span></div>
+                    <div className="kv"><span className="k">Rank this epoch</span><span className="v">#{myStanding.rank}</span></div>
+                    <div className="kv"><span className="k">Engagement score</span><span className="v">{fmtNum(myStanding.score)}</span></div>
                   </div>
                 ) : (
                   <div className="you-card">
-                    <div className="you-empty">You haven't posted {c.keyword} yet &mdash; post to appear in this epoch's leaderboard.</div>
+                    <div className="you-empty">You haven't posted {c.keyword} in the current epoch yet &mdash; post to appear in the leaderboard.</div>
                   </div>
                 )
               ) : (
@@ -1441,13 +1600,14 @@ function SSODetail({id, go, user, notify}){
             </div>
             <div className="panel">
               <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoInfo size={13}/>Campaign details</div>
-              <div className="kv"><span className="k">Total locked</span><span className="v">{fmtNum(c.locked)} {c.token}</span></div>
+              <div className="kv"><span className="k">Total locked</span><span className="v">{fmtNum(fmtTokenAmount(c.locked))} {c.denom}</span></div>
               <div className="kv"><span className="k">Reward denomination</span><span className="v">{c.denom}</span></div>
               <div className="kv"><span className="k">Epoch length</span><span className="v">{c.epochLen}</span></div>
               <div className="kv"><span className="k">Leaderboard size</span><span className="v">Top {c.size}</span></div>
               <div className="kv"><span className="k">Campaign duration</span><span className="v">{c.duration}</span></div>
               <div className="kv"><span className="k">Min. account age</span><span className="v">30 days</span></div>
               <div className="kv"><span className="k">Min. followers</span><span className="v">25</span></div>
+              <div className="kv"><span className="k">Campaign contract</span><span className="v mono" style={{fontSize:11}}><a href={explorerAddressUrl(c.id)} target="_blank" rel="noopener noreferrer">{shortAddr(c.id)}</a></span></div>
             </div>
           </div>
         </div>
@@ -1477,6 +1637,7 @@ function CreateWizard({kind, go, user, notify}){
   const isSHO = kind==='sho';
   const steps = isSHO ? SHO_STEPS : SSO_STEPS;
   const [step,setStep] = useState(0);
+  const [submitting, setSubmitting] = useState(null); // null | 'approving' | 'creating'
   const [form,setForm] = useState({
     contract:'', token:'',
     amount:'10000000', denom:'token', window:'7D', size:100,
@@ -1485,11 +1646,24 @@ function CreateWizard({kind, go, user, notify}){
     msOn: {'100K':true,'250K':true,'1M':true,'5M':true},
   });
   const set = (k,v)=> setForm(f=>({...f,[k]:v}));
-  const resolved = resolveToken(form.contract);
+
+  // Debounced live lookup against ../api's GET /tokens/:address -- replaces the old
+  // hand-authored TOKEN_REGISTRY map (see api/src/tokenRoutes.js's own header on why this is
+  // "sourced from the real chain instead of a hand-authored map" now).
+  const [debouncedAddr, setDebouncedAddr] = useState('');
+  useEffect(()=>{
+    const t = setTimeout(()=> setDebouncedAddr(form.contract.trim()), 400);
+    return ()=>clearTimeout(t);
+  }, [form.contract]);
+  const validAddr = window.ethers && window.ethers.isAddress(debouncedAddr);
+  const tokenLookup = useApiFetch(validAddr ? `/tokens/${debouncedAddr}` : null, [validAddr, debouncedAddr]);
+  const resolved = tokenLookup.data;
 
   useEffect(()=>{
     if(resolved) setForm(f=> f.token===resolved.ticker ? f : {...f, token:resolved.ticker});
   }, [resolved]);
+
+  const denomLabel = form.denom==='token' ? (resolved?resolved.ticker:form.token) : form.denom.toUpperCase();
 
   if(!user.wallet){
     return (
@@ -1512,36 +1686,88 @@ function CreateWizard({kind, go, user, notify}){
   const next = ()=> setStep(s=>Math.min(steps.length-1,s+1));
   const back = ()=> setStep(s=>Math.max(0,s-1));
 
-  const submit = ()=>{
-    const denomLabel = form.denom==='token' ? form.token : form.denom.toUpperCase();
-    const netLocked = Math.round(Number(form.amount||0)*0.995);
-    const slug = (resolved?resolved.ticker:form.token).replace(/[^a-z0-9]/gi,'').toLowerCase() || 'token';
-    const newId = `${slug}-${kind}-${Date.now().toString(36).slice(-5)}`;
-    const base = {
-      id:newId, token:form.token, name: resolved ? resolved.name : form.token.replace('$',''),
-      creator:user.wallet, creatorType:'Dev', contract:form.contract,
-      locked:netLocked, denom:denomLabel, size:form.size, duration:form.duration, openedDaysAgo:0,
-    };
-    if(isSHO){
-      const chosenTiers = MS_TIERS.filter(t=>form.msOn[t.id]);
-      SHO_CAMPAIGNS.push({
-        ...base, window:form.window, daysLeft:Number(form.duration.replace('D','')),
-        mcap: resolved ? resolved.mcap : 0,
-        milestones: chosenTiers.map(t=>({tier:t.id, bps:form.ms[t.id], status:'pending'})),
-      });
-      MY_CREATED_SHO.push(newId);
-    } else {
-      const durDays = form.duration==='7D'?7:form.duration==='30D'?30:90;
-      const epochDays = form.epochLen==='24H'?1:form.epochLen==='7D'?7:30;
-      const epochCount = Math.max(1, Math.round(durDays/epochDays));
-      SSO_CAMPAIGNS.push({
-        ...base, keyword:form.keyword, epochLen:form.epochLen,
-        epochs: Array.from({length:epochCount}, (_,i)=>({n:i+1, status:'pending'})),
-      });
-      MY_CREATED_SSO.push(newId);
+  const windowEnumOf = (v)=> v==='24H'?0:v==='7D'?1:2; // Types.LeaderboardWindow / EpochLength ordering
+  const durationSecondsOf = (v)=> v==='7D'?7*86400:v==='30D'?30*86400:90*86400;
+
+  // Resolves rewardToken address + the decimals `amount` must be parsed in -- these are
+  // whatever the *reward* denomination uses, not necessarily the tracked token's decimals.
+  async function resolveRewardToken(){
+    if(form.denom==='eth') return {address: window.ethers.ZeroAddress, decimals: 18};
+    if(form.denom==='usdc'){
+      if(!SCP_CONFIG.USDC_ADDRESS) throw new Error('No USDC address configured for this chain yet (SCP_CONFIG.USDC_ADDRESS is empty).');
+      const decimals = await new window.ethers.Contract(SCP_CONFIG.USDC_ADDRESS, ERC20_ABI, readProvider()).decimals().catch(()=>6);
+      return {address: SCP_CONFIG.USDC_ADDRESS, decimals: Number(decimals)};
     }
-    notify(`${form.token} ${isSHO?'SHO':'SSO'} campaign created (mock), 0.5% fee deducted.`);
-    go(`/${kind}/${newId}`);
+    // 'token' -- the campaigning token itself
+    const decimals = await new window.ethers.Contract(form.contract, ERC20_ABI, readProvider()).decimals().catch(()=>18);
+    return {address: form.contract, decimals: Number(decimals)};
+  }
+
+  const submit = async ()=>{
+    if(!resolved){ notify('Resolve a valid token contract first.'); return; }
+    try {
+      const {address: rewardToken, decimals} = await resolveRewardToken();
+      const amountWei = window.ethers.parseUnits(String(form.amount||'0'), decimals);
+      const signer = await user.getSigner();
+      const factoryAddr = isSHO ? SCP_CONFIG.SHO_FACTORY_ADDRESS : SCP_CONFIG.SSO_FACTORY_ADDRESS;
+
+      if(rewardToken !== window.ethers.ZeroAddress){
+        const erc20 = new window.ethers.Contract(rewardToken, ERC20_ABI, signer);
+        const allowance = await erc20.allowance(user.wallet, factoryAddr);
+        if(allowance < amountWei){
+          setSubmitting('approving');
+          notify('Approving the factory to pull the reward pool...');
+          const approveTx = await erc20.approve(factoryAddr, amountWei);
+          await approveTx.wait();
+        }
+      }
+
+      setSubmitting('creating');
+      notify('Submitting campaign creation...');
+      const value = rewardToken===window.ethers.ZeroAddress ? amountWei : 0n;
+      let receipt, factory;
+      if(isSHO){
+        const chosenTiers = MS_TIERS.filter(t=>form.msOn[t.id]);
+        factory = new window.ethers.Contract(factoryAddr, SHO_FACTORY_ABI, signer);
+        const tx = await factory.createCampaign(
+          form.contract, rewardToken, amountWei, windowEnumOf(form.window), form.size,
+          durationSecondsOf(form.duration),
+          chosenTiers.map(t=>MS_TIERS.findIndex(x=>x.id===t.id)),
+          chosenTiers.map(t=>form.ms[t.id]),
+          {value}
+        );
+        receipt = await tx.wait();
+      } else {
+        factory = new window.ethers.Contract(factoryAddr, SSO_FACTORY_ABI, signer);
+        const epochCount = Math.max(1, Math.round(durationSecondsOf(form.duration)/(windowEnumOf(form.epochLen)===0?86400:windowEnumOf(form.epochLen)===1?604800:2592000)));
+        const evenBps = Math.floor(10000/epochCount);
+        const epochBpsList = Array.from({length:epochCount}, (_,i)=> i===epochCount-1 ? 10000-evenBps*(epochCount-1) : evenBps);
+        const tx = await factory.createCampaign(
+          form.contract, rewardToken, amountWei, form.keyword, windowEnumOf(form.epochLen), form.size,
+          durationSecondsOf(form.duration), epochBpsList,
+          {value}
+        );
+        receipt = await tx.wait();
+      }
+
+      // The new clone's address only exists in the CampaignCreated log, not a plain return
+      // value we can read back from a mined tx -- decode it the same way ethers itself
+      // recommends for a non-view function's return data.
+      let campaignAddress = null;
+      for(const log of receipt.logs){
+        try {
+          const parsed = factory.interface.parseLog(log);
+          if(parsed && parsed.name==='CampaignCreated'){ campaignAddress = parsed.args.campaign; break; }
+        } catch(e){ /* not this contract's event, ignore */ }
+      }
+
+      notify(`${form.token} ${isSHO?'SHO':'SSO'} campaign created, 0.5% fee deducted.`);
+      go(campaignAddress ? `/${kind}/${campaignAddress}` : `/${kind}`);
+    } catch(e){
+      notify('Campaign creation failed: '+shortError(e));
+    } finally {
+      setSubmitting(null);
+    }
   };
 
   return (
@@ -1563,23 +1789,25 @@ function CreateWizard({kind, go, user, notify}){
             {step===0 && (
               <>
                 <div className="field">
-                  <label>Reward token &mdash; contract address</label>
+                  <label>Token to track &mdash; contract address</label>
                   <input type="text" className="mono" value={form.contract} onChange={e=>set('contract',e.target.value)} placeholder="0x..."/>
-                  {form.contract.trim()==='' ? null : resolved ? (
+                  {form.contract.trim()==='' ? null : tokenLookup.loading ? (
+                    <div className="token-resolved">Looking up on {SCP_CONFIG.CHAIN_NAME}&hellip;</div>
+                  ) : resolved ? (
                     <div className="token-resolved">
                       <IcoCheckCirc size={14}/> Resolved <b>{resolved.name}</b> <span className="mono">{resolved.ticker}</span>
                     </div>
                   ) : (
                     <div className="token-resolved bad">
-                      <IcoInfo size={14}/> Contract not recognized on Robinhood Chain &mdash; check the address.
+                      <IcoInfo size={14}/> Not a recognized ERC20 on {SCP_CONFIG.CHAIN_NAME} &mdash; check the address.
                     </div>
                   )}
-                  <div className="help">Added by contract, never by typing a ticker &mdash; the ticker above is resolved automatically. Must be indexed from Pons.family (bonding curve or graduated to Uniswap V4).</div>
+                  <div className="help">The Pons.family (or graduated Uniswap V4) token whose activity this campaign tracks &mdash; net-buy volume for SHO, or the account posting about it for SSO. Added by contract, never by typing a ticker.</div>
                 </div>
                 <div className="field">
                   <label>Amount to lock</label>
                   <input type="text" value={form.amount} onChange={e=>set('amount',e.target.value)}/>
-                  <div className="help">0.5% protocol fee deducted at creation &middot; net escrowed: {fmtNum(Math.round(Number(form.amount||0)*0.995))} {form.token}</div>
+                  <div className="help">0.5% protocol fee deducted at creation &middot; net escrowed: {fmtNum(Math.round(Number(form.amount||0)*0.995))} {denomLabel}</div>
                 </div>
               </>
             )}
@@ -1589,10 +1817,11 @@ function CreateWizard({kind, go, user, notify}){
                 <div className="field">
                   <label>Reward denomination</label>
                   <div className="opt-row">
-                    {[['token', form.token],['usdc','USDC'],['eth','ETH']].map(([v,l])=>(
-                      <button key={v} className={`opt-btn ${form.denom===v?'sel':''}`} onClick={()=>set('denom',v)}>{l}</button>
+                    {[['token', form.token],['usdc','USDC'],['eth', SCP_CONFIG.NATIVE_SYMBOL]].map(([v,l])=>(
+                      <button key={v} className={`opt-btn ${form.denom===v?'sel':''}`} disabled={v==='usdc' && !SCP_CONFIG.USDC_ADDRESS} onClick={()=>set('denom',v)}>{l}</button>
                     ))}
                   </div>
+                  {!SCP_CONFIG.USDC_ADDRESS && <div className="help">USDC isn&rsquo;t deployed on {SCP_CONFIG.CHAIN_NAME} yet, so that option is disabled here.</div>}
                 </div>
                 <div className="field">
                   <label>Leaderboard window</label>
@@ -1618,10 +1847,11 @@ function CreateWizard({kind, go, user, notify}){
                 <div className="field">
                   <label>Reward denomination</label>
                   <div className="opt-row">
-                    {[['token', form.token],['usdc','USDC'],['eth','ETH']].map(([v,l])=>(
-                      <button key={v} className={`opt-btn ${form.denom===v?'sel':''}`} onClick={()=>set('denom',v)}>{l}</button>
+                    {[['token', form.token],['usdc','USDC'],['eth', SCP_CONFIG.NATIVE_SYMBOL]].map(([v,l])=>(
+                      <button key={v} className={`opt-btn ${form.denom===v?'sel':''}`} disabled={v==='usdc' && !SCP_CONFIG.USDC_ADDRESS} onClick={()=>set('denom',v)}>{l}</button>
                     ))}
                   </div>
+                  {!SCP_CONFIG.USDC_ADDRESS && <div className="help">USDC isn&rsquo;t deployed on {SCP_CONFIG.CHAIN_NAME} yet, so that option is disabled here.</div>}
                 </div>
                 <div className="field">
                   <label>Tracked keyword</label>
@@ -1701,11 +1931,11 @@ function CreateWizard({kind, go, user, notify}){
               <div>
                 <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoCheckCirc size={13}/>Review &amp; confirm</div>
                 <div className="kv"><span className="k">Token</span><span className="v">{resolved ? resolved.name : '—'} ({form.token})</span></div>
-                <div className="kv"><span className="k">Contract</span><span className="v mono" style={{fontSize:11}}>{form.contract.slice(0,6)}...{form.contract.slice(-4)}</span></div>
-                <div className="kv"><span className="k">Locked amount</span><span className="v">{fmtNum(Number(form.amount||0))} {form.token}</span></div>
-                <div className="kv"><span className="k">Protocol fee (0.5%)</span><span className="v">&minus;{fmtNum(Math.round(Number(form.amount||0)*0.005))} {form.token}</span></div>
-                <div className="kv"><span className="k">Net escrowed</span><span className="v">{fmtNum(Math.round(Number(form.amount||0)*0.995))} {form.token}</span></div>
-                <div className="kv"><span className="k">Reward denomination</span><span className="v">{form.denom==='token'?form.token:form.denom.toUpperCase()}</span></div>
+                <div className="kv"><span className="k">Contract</span><span className="v mono" style={{fontSize:11}}>{shortAddr(form.contract)}</span></div>
+                <div className="kv"><span className="k">Locked amount</span><span className="v">{fmtNum(Number(form.amount||0))} {denomLabel}</span></div>
+                <div className="kv"><span className="k">Protocol fee (0.5%)</span><span className="v">&minus;{fmtNum(Math.round(Number(form.amount||0)*0.005))} {denomLabel}</span></div>
+                <div className="kv"><span className="k">Net escrowed</span><span className="v">{fmtNum(Math.round(Number(form.amount||0)*0.995))} {denomLabel}</span></div>
+                <div className="kv"><span className="k">Reward denomination</span><span className="v">{denomLabel}</span></div>
                 {isSHO ? (
                   <>
                     <div className="kv"><span className="k">Leaderboard</span><span className="v">Top {form.size} &middot; {form.window} window</span></div>
@@ -1724,10 +1954,10 @@ function CreateWizard({kind, go, user, notify}){
             )}
 
             <div className="wizard-actions">
-              <Btn kind="ghost" onClick={back} disabled={step===0}>Back</Btn>
+              <Btn kind="ghost" onClick={back} disabled={step===0 || !!submitting}>Back</Btn>
               {step<steps.length-1
                 ? <Btn onClick={next} disabled={(step===0 && !resolved) || (isSHO && step===3 && !bpsOk)}>Continue</Btn>
-                : <Btn onClick={submit}>Create campaign</Btn>}
+                : <Btn onClick={submit} disabled={!!submitting}>{submitting==='approving' ? 'Approving…' : submitting==='creating' ? 'Creating…' : 'Create campaign'}</Btn>}
             </div>
           </div>
         </div>
@@ -1744,18 +1974,78 @@ function Register({go, user, notify}){
       <div className="wrap" style={{maxWidth:520}}>
         <div className="breadcrumb"><button onClick={()=>go('/')}>Strong Commitment Protocol</button> / Register</div>
         <h1 style={{marginBottom:8}}>Link your X account</h1>
-        <p className="camp-meta" style={{marginBottom:28}}>One registration covers every Strong Shill Offering campaign you ever participate in.</p>
+        <p className="camp-meta" style={{marginBottom:28}}>One registration covers every Strong Shill Offering campaign you ever participate in &mdash; this calls Registry.registerHandle(...) once, on-chain.</p>
         <div className="panel">
           <div className="field">
             <label>1. Connect wallet</label>
-            {user.wallet ? <Tag kind="sho" icon={IcoCheckCirc}>{user.wallet} connected</Tag> : <Btn kind="outline" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>}
+            {user.wallet ? <Tag kind="sho" icon={IcoCheckCirc}>{shortAddr(user.wallet)} connected</Tag> : <Btn kind="outline" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>}
           </div>
           <div className="field">
             <label>2. Connect X account</label>
-            {user.xhandle ? <Tag kind="sso" icon={IcoCheckCirc}>{user.xhandle} connected</Tag> : <Btn kind="outline" icon={IcoX} onClick={user.connectX} disabled={!user.wallet}>Connect X (OAuth)</Btn>}
+            {user.xhandle ? <Tag kind="sso" icon={IcoCheckCirc}>{user.xhandle} linked on-chain</Tag> : <Btn kind="outline" icon={IcoX} onClick={user.connectX} disabled={!user.wallet}>Connect X (OAuth)</Btn>}
             {!user.wallet && <div className="help">Connect a wallet first.</div>}
+            {user.wallet && !user.xhandle && <div className="help">Redirects to X to sign in, then comes back here to confirm the on-chain link with one more wallet signature.</div>}
           </div>
-          <Btn block icon={IcoShield} disabled={!user.wallet || !user.xhandle} onClick={()=>{notify('X account linked to wallet (mock).'); go('/sso');}}>Finish registration</Btn>
+          <Btn block icon={IcoShield} disabled={!user.wallet || !user.xhandle} onClick={()=>go('/sso')}>{user.xhandle ? 'Browse SSO campaigns' : 'Complete the steps above'}</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ===================== LINK X CALLBACK ===================== */
+// Where ../registration-service's /auth/x/callback redirects back to (when it has
+// FRONTEND_URL configured -- see its server.js) after a completed OAuth round-trip. Finishes
+// the on-chain half of PRD §12.3-12.4 that service never does itself: submitting
+// Registry.registerHandle(xHandle, attestation) using the connected wallet.
+function LinkXCallback({go, user, notify}){
+  const params = useMemo(()=> parseQuery((window.location.hash.split('?')[1])||''), []);
+  const {wallet: startedWallet, handle, attestation, error: oauthError} = params;
+  const [submitting, setSubmitting] = useState(false);
+
+  const confirm = async ()=>{
+    setSubmitting(true);
+    try {
+      const signer = await user.getSigner();
+      const registry = new window.ethers.Contract(SCP_CONFIG.REGISTRY_ADDRESS, REGISTRY_ABI, signer);
+      const tx = await registry.registerHandle(handle, attestation);
+      notify('Linking submitted -- waiting for confirmation...');
+      await tx.wait();
+      await user.refreshXHandle();
+      notify(`${handle} linked on-chain.`);
+      go('/profile');
+    } catch(e){
+      notify('Linking failed: '+shortError(e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="page">
+      <div className="wrap" style={{maxWidth:520}}>
+        <div className="breadcrumb"><button onClick={()=>go('/')}>Strong Commitment Protocol</button> / Register</div>
+        <h1 style={{marginBottom:8}}>Confirm your X link</h1>
+        <div className="panel">
+          {oauthError ? (
+            <div className="you-empty">X sign-in didn&rsquo;t complete: {oauthError}. <button style={{background:'none',border:'none',color:'var(--accent)',textDecoration:'underline',cursor:'pointer',font:'inherit',padding:0}} onClick={()=>go('/register')}>Try again</button></div>
+          ) : !handle || !attestation ? (
+            <div className="you-empty">Nothing to confirm here &mdash; this page only makes sense right after returning from X sign-in. <button style={{background:'none',border:'none',color:'var(--accent)',textDecoration:'underline',cursor:'pointer',font:'inherit',padding:0}} onClick={()=>go('/register')}>Start registration</button></div>
+          ) : !user.wallet ? (
+            <div className="you-empty">
+              Reconnect the wallet you started with ({shortAddr(startedWallet)}) to finish linking.
+              <div style={{marginTop:12}}><Btn size="sm" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn></div>
+            </div>
+          ) : startedWallet && user.wallet.toLowerCase()!==startedWallet.toLowerCase() ? (
+            <div className="you-empty">This link was started from {shortAddr(startedWallet)}, but {shortAddr(user.wallet)} is connected now. Switch wallets and reload to continue.</div>
+          ) : (
+            <>
+              <div className="kv"><span className="k">Wallet</span><span className="v">{shortAddr(user.wallet)}</span></div>
+              <div className="kv"><span className="k">X handle</span><span className="v">{handle}</span></div>
+              <p className="camp-meta" style={{margin:'12px 0 16px'}}>X verified this handle for your wallet. One more signature submits Registry.registerHandle(...) on-chain to finish linking.</p>
+              <Btn block icon={IcoShield} disabled={submitting} onClick={confirm}>{submitting?'Confirming…':'Confirm on-chain'}</Btn>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -1768,20 +2058,54 @@ function Profile({go, user, notify}){
   const hasWallet = !!user.wallet;
   const hasX = !!user.xhandle;
   const connected = hasWallet || hasX;
+  const [refreshTick, setRefreshTick] = useState(0);
 
-  const shoPositions = hasWallet ? MY_SHO_POSITIONS.map(p=>({...p, c:SHO_CAMPAIGNS.find(x=>x.id===p.campaignId)})).filter(p=>p.c) : [];
-  const ssoPositions = hasX ? MY_SSO_POSITIONS.map(p=>({...p, c:SSO_CAMPAIGNS.find(x=>x.id===p.campaignId)})).filter(p=>p.c) : [];
-  const createdSho = hasWallet ? MY_CREATED_SHO.map(id=>SHO_CAMPAIGNS.find(x=>x.id===id)).filter(Boolean) : [];
-  const createdSso = hasWallet ? MY_CREATED_SSO.map(id=>SSO_CAMPAIGNS.find(x=>x.id===id)).filter(Boolean) : [];
-  const history = connected ? CLAIM_HISTORY : [];
+  // Cross-referenced against the full campaign lists (same "look it up by address" pattern
+  // the old mock used with SHO_CAMPAIGNS.find/SSO_CAMPAIGNS.find) since the wallet-scoped
+  // endpoints below intentionally return only addresses + numbers, not display fields --
+  // see walletRoutes.js's own header.
+  const shoCampaigns = useApiFetch(hasWallet ? '/sho/campaigns' : null, [hasWallet]);
+  const ssoCampaigns = useApiFetch(hasWallet ? '/sso/campaigns' : null, [hasWallet]);
+  const standings = useApiFetch(hasWallet ? `/wallets/${user.wallet}/standings` : null, [hasWallet, user.wallet, refreshTick]);
+  const claims = useApiFetch(hasWallet ? `/wallets/${user.wallet}/claims` : null, [hasWallet, user.wallet, refreshTick]);
+  const created = useApiFetch(hasWallet ? `/wallets/${user.wallet}/created` : null, [hasWallet, user.wallet, refreshTick]);
+  const [claiming, setClaiming] = useState(null);
 
-  const claimable = [
-    ...shoPositions.filter(p=>p.claimable).map(p=>({kind:'sho', label:p.c.token, sub:'SHO leaderboard reward', amount:p.claimAmount, denom:p.c.denom, usd:p.claimUsd, open:()=>go(`/sho/${p.c.id}`)})),
-    ...ssoPositions.filter(p=>p.claimable).map(p=>({kind:'sso', label:p.c.token, sub:'SSO leaderboard reward', amount:p.claimAmount, denom:p.c.denom, usd:p.claimUsd, open:()=>go(`/sso/${p.c.id}`)})),
-  ];
+  const findSho = (addr)=> shoCampaigns.data && shoCampaigns.data.campaigns.find(c=>c.contract.toLowerCase()===addr.toLowerCase());
+  const findSso = (addr)=> ssoCampaigns.data && ssoCampaigns.data.campaigns.find(c=>c.contract.toLowerCase()===addr.toLowerCase());
 
-  const totalClaimedUsd = history.reduce((s,h)=>s+h.usd,0);
-  const totalClaimableUsd = claimable.reduce((s,it)=>s+it.usd,0);
+  const shoPositions = (standings.data ? standings.data.sho : []).map(s=>({...s, c:findSho(s.campaignAddress)})).filter(p=>p.c);
+  const ssoPositions = (standings.data ? standings.data.sso : []).map(s=>({...s, c:findSso(s.campaignAddress)})).filter(p=>p.c);
+  const createdSho = (created.data ? created.data.created : []).filter(c=>c.factory==='sho').map(c=>({...c, full:findSho(c.id)}));
+  const createdSso = (created.data ? created.data.created : []).filter(c=>c.factory==='sso').map(c=>({...c, full:findSso(c.id)}));
+  const allClaims = claims.data ? claims.data.claims : [];
+  const history = allClaims.filter(cl=>cl.status==='claimed');
+  const claimableEntries = allClaims.filter(cl=>cl.status==='claimable').map(cl=>{
+    const full = cl.factory==='sho' ? findSho(cl.campaignAddress) : findSso(cl.campaignAddress);
+    return {...cl, full};
+  });
+
+  const doClaimFromProfile = async (cl)=>{
+    setClaiming(cl.campaignAddress+':'+cl.index);
+    try {
+      const res = await fetch(`${SCP_CONFIG.API_BASE_URL}/campaigns/${cl.campaignAddress}/claim-proof?wallet=${user.wallet}&index=${cl.index}`);
+      const body = await res.json();
+      if(!res.ok) throw new Error(body.error || 'failed to fetch claim proof');
+      const signer = await user.getSigner();
+      const campaign = new window.ethers.Contract(cl.campaignAddress, CAMPAIGN_ABI, signer);
+      const tx = await campaign.claim(cl.index, body.amount, body.proof);
+      notify('Claim submitted -- waiting for confirmation...');
+      await tx.wait();
+      notify('Claim confirmed.');
+      setRefreshTick(t=>t+1);
+    } catch(e){
+      notify('Claim failed: '+shortError(e));
+    } finally {
+      setClaiming(null);
+    }
+  };
+
+  const totalClaimableAmount = claimableEntries.reduce((s,it)=>s+fmtTokenAmount(it.amount),0);
   const activeCount = shoPositions.length + ssoPositions.length;
   const createdCount = createdSho.length + createdSso.length;
 
@@ -1798,7 +2122,7 @@ function Profile({go, user, notify}){
         <div className="profile-head">
           <div className="profile-avatar"><IcoWallet size={22}/></div>
           <div style={{flex:1,minWidth:220}}>
-            <h1 style={{fontSize:26,marginBottom:6}}>{hasWallet ? user.wallet : hasX ? user.xhandle : 'Your profile'}</h1>
+            <h1 style={{fontSize:26,marginBottom:6}}>{hasWallet ? shortAddr(user.wallet) : hasX ? user.xhandle : 'Your profile'}</h1>
             <div style={{display:'flex',flexWrap:'wrap',gap:8,alignItems:'center'}}>
               {hasWallet && hasX && <span className="camp-meta">{user.xhandle}</span>}
               {roles.map(r=> <Tag key={r.label} kind={r.kind}>{r.label}</Tag>)}
@@ -1821,28 +2145,27 @@ function Profile({go, user, notify}){
         ) : (
           <>
             <div className="profile-stats">
-              <div className="stat-tile"><IcoCoins size={20}/><div><StatNum value={totalClaimedUsd} format={fmtUSD}/><span className="lbl">Total claimed</span></div></div>
-              <div className="stat-tile accent"><IcoCheckCirc size={20}/><div><StatNum value={totalClaimableUsd} format={fmtUSD}/><span className="lbl">Claimable now</span></div></div>
+              <div className="stat-tile"><IcoCoins size={20}/><div><StatNum value={history.length} format={v=>Math.round(v)}/><span className="lbl">Rewards claimed</span></div></div>
+              <div className="stat-tile accent"><IcoCheckCirc size={20}/><div><StatNum value={claimableEntries.length} format={v=>Math.round(v)}/><span className="lbl">Claimable now</span></div></div>
               <div className="stat-tile"><IcoTarget size={20}/><div><StatNum value={activeCount} format={v=>Math.round(v)}/><span className="lbl">Active positions</span></div></div>
               <div className="stat-tile"><IcoFlask size={20}/><div><StatNum value={createdCount} format={v=>Math.round(v)}/><span className="lbl">Campaigns created</span></div></div>
             </div>
 
-            {claimable.length>0 && (
+            {claimableEntries.length>0 && (
               <div className="panel" style={{marginTop:22}}>
                 <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoCheckCirc size={13}/>Claimable now</div>
                 <div className="claim-list">
-                  {claimable.map((it,i)=>(
-                    <div key={i} className="claim-row" onClick={it.open}>
+                  {claimableEntries.map((it,i)=>(
+                    <div key={i} className="claim-row" onClick={()=>go(`/${it.factory}/${it.campaignAddress}`)}>
                       <div>
-                        <div style={{fontWeight:600,fontSize:13.5,display:'flex',alignItems:'center',gap:8}}>{it.label} <Tag kind={it.kind}>{it.kind==='sho'?'SHO':'SSO'}</Tag></div>
-                        <div className="camp-meta">{it.sub}</div>
+                        <div style={{fontWeight:600,fontSize:13.5,display:'flex',alignItems:'center',gap:8}}>{it.full ? it.full.token : shortAddr(it.campaignAddress)} <Tag kind={it.factory}>{it.factory==='sho'?'SHO':'SSO'}</Tag></div>
+                        <div className="camp-meta">{it.factory==='sho' ? `Milestone ${it.index}` : `Epoch ${it.index+1}`} reward</div>
                       </div>
                       <div style={{display:'flex',alignItems:'center',gap:14}}>
                         <div style={{textAlign:'right'}}>
-                          <div className="mono" style={{fontWeight:600}}>{fmtNum(it.amount)} {it.denom}</div>
-                          <div className="camp-meta">{fmtUSD(it.usd)}</div>
+                          <div className="mono" style={{fontWeight:600}}>{fmtNum(fmtTokenAmount(it.amount))} {it.full ? (it.full.rewardTokenSymbol||it.full.token) : ''}</div>
                         </div>
-                        <Btn size="sm" icon={IcoCheckCirc} onClick={(e)=>{e.stopPropagation(); notify(`Claim submitted for ${it.label} (mock).`);}}>Claim</Btn>
+                        <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===it.campaignAddress+':'+it.index} onClick={(e)=>{e.stopPropagation(); doClaimFromProfile(it);}}>{claiming===it.campaignAddress+':'+it.index ? 'Claiming…' : 'Claim'}</Btn>
                       </div>
                     </div>
                   ))}
@@ -1858,11 +2181,11 @@ function Profile({go, user, notify}){
                     <thead><tr><th>Campaign</th><th>Rank</th><th>Net-buy volume</th><th>Status</th></tr></thead>
                     <tbody>
                       {shoPositions.map(p=>(
-                        <tr key={p.campaignId} style={{cursor:'pointer'}} onClick={()=>go(`/sho/${p.campaignId}`)}>
+                        <tr key={p.campaignAddress} style={{cursor:'pointer'}} onClick={()=>go(`/sho/${p.campaignAddress}`)}>
                           <td>{p.c.token}</td>
                           <td className="rank">#{p.rank}</td>
-                          <td className="mono">{fmtUSD(p.volume)}</td>
-                          <td>{p.claimable ? <Tag kind="sho" icon={IcoCheckCirc}>Claimable</Tag> : <Tag kind="neutral" icon={IcoClock}>Tracking</Tag>}</td>
+                          <td className="mono">{fmtUSD(fmtTokenAmount(p.score))}</td>
+                          <td><Tag kind="neutral" icon={IcoClock}>Tracking</Tag></td>
                         </tr>
                       ))}
                     </tbody>
@@ -1879,11 +2202,11 @@ function Profile({go, user, notify}){
                     <thead><tr><th>Campaign</th><th>Rank</th><th>Engagement score</th><th>Status</th></tr></thead>
                     <tbody>
                       {ssoPositions.map(p=>(
-                        <tr key={p.campaignId} style={{cursor:'pointer'}} onClick={()=>go(`/sso/${p.campaignId}`)}>
+                        <tr key={p.campaignAddress+':'+p.epochIndex} style={{cursor:'pointer'}} onClick={()=>go(`/sso/${p.campaignAddress}`)}>
                           <td>{p.c.token}</td>
                           <td className="rank">#{p.rank}</td>
                           <td className="mono">{fmtNum(p.score)}</td>
-                          <td>{p.claimable ? <Tag kind="sso" icon={IcoCheckCirc}>Claimable</Tag> : <Tag kind="neutral" icon={IcoClock}>Tracking</Tag>}</td>
+                          <td><Tag kind="neutral" icon={IcoClock}>Tracking</Tag></td>
                         </tr>
                       ))}
                     </tbody>
@@ -1897,31 +2220,35 @@ function Profile({go, user, notify}){
                 <div className="eyebrow" style={{marginBottom:14,display:'flex',alignItems:'center',gap:6}}><IcoFlask size={13}/>My created campaigns</div>
                 <div className="created-grid">
                   {createdSho.map(c=>{
-                    const distributedBps = c.milestones.filter(m=>m.status==='claimed'||m.status==='claimable').reduce((s,m)=>s+m.bps,0);
+                    const f = c.full;
+                    const distributedBps = f ? f.milestones.filter(m=>m.status==='claimed'||m.status==='claimable').reduce((s,m)=>s+m.bps,0) : 0;
+                    const locked = fmtTokenAmount(f ? f.locked : c.locked);
                     return (
                       <div key={c.id} className="created-card" onClick={()=>go(`/sho/${c.id}`)}>
                         <div className="camp-card-top">
-                          <div><div className="ticker">{c.token}</div><div className="camp-meta">SHO &middot; {c.window} window</div></div>
-                          <Tag kind="sho">Active</Tag>
+                          <div><div className="ticker">{f ? f.token : shortAddr(c.token)}</div><div className="camp-meta">SHO{f?` · ${f.window} window`:''}</div></div>
+                          <Tag kind="sho">{f && f.milestones.every(m=>m.status==='claimed'||m.status==='claimable') ? 'Completed' : 'Active'}</Tag>
                         </div>
-                        <div className="kv"><span className="k">Locked</span><span className="v">{fmtNum(c.locked)} {c.token}</span></div>
+                        <div className="kv"><span className="k">Locked</span><span className="v">{fmtNum(locked)} {f ? f.denom : ''}</span></div>
                         <div className="kv"><span className="k">Distributed</span><span className="v">{distributedBps/100}%</span></div>
-                        <div className="kv"><span className="k">Remaining</span><span className="v">{fmtNum(Math.round(c.locked*(10000-distributedBps)/10000))} {c.token}</span></div>
+                        <div className="kv"><span className="k">Remaining</span><span className="v">{fmtNum(locked*(10000-distributedBps)/10000)} {f ? f.denom : ''}</span></div>
                       </div>
                     );
                   })}
                   {createdSso.map(c=>{
-                    const distributedEpochs = c.epochs.filter(e=>e.status==='claimed'||e.status==='claimable').length;
-                    const distributedBps = Math.round(10000*distributedEpochs/c.epochs.length);
+                    const f = c.full;
+                    const distributedEpochs = f ? f.epochs.filter(e=>e.status==='claimed'||e.status==='claimable').length : 0;
+                    const distributedBps = f ? Math.round(10000*distributedEpochs/f.epochs.length) : 0;
+                    const locked = fmtTokenAmount(f ? f.locked : c.locked);
                     return (
                       <div key={c.id} className="created-card" onClick={()=>go(`/sso/${c.id}`)}>
                         <div className="camp-card-top">
-                          <div><div className="ticker">{c.token}</div><div className="camp-meta">SSO &middot; {c.epochLen} epochs</div></div>
-                          <Tag kind="sso">Active</Tag>
+                          <div><div className="ticker">{f ? f.token : shortAddr(c.token)}</div><div className="camp-meta">SSO{f?` · ${f.epochLen} epochs`:''}</div></div>
+                          <Tag kind="sso">{f && f.currentEpochIndex==null ? 'Completed' : 'Active'}</Tag>
                         </div>
-                        <div className="kv"><span className="k">Locked</span><span className="v">{fmtNum(c.locked)} {c.denom}</span></div>
+                        <div className="kv"><span className="k">Locked</span><span className="v">{fmtNum(locked)} {f ? f.denom : ''}</span></div>
                         <div className="kv"><span className="k">Distributed</span><span className="v">{distributedBps/100}%</span></div>
-                        <div className="kv"><span className="k">Remaining</span><span className="v">{fmtNum(Math.round(c.locked*(10000-distributedBps)/10000))} {c.denom}</span></div>
+                        <div className="kv"><span className="k">Remaining</span><span className="v">{fmtNum(locked*(10000-distributedBps)/10000)} {f ? f.denom : ''}</span></div>
                       </div>
                     );
                   })}
@@ -1937,13 +2264,13 @@ function Profile({go, user, notify}){
                     <thead><tr><th>Date</th><th>Campaign</th><th>Reward</th><th>Amount</th></tr></thead>
                     <tbody>
                       {history.map((h,i)=>{
-                        const c = h.kind==='sho' ? SHO_CAMPAIGNS.find(x=>x.id===h.campaignId) : SSO_CAMPAIGNS.find(x=>x.id===h.campaignId);
+                        const f = h.factory==='sho' ? findSho(h.campaignAddress) : findSso(h.campaignAddress);
                         return (
                           <tr key={i}>
-                            <td className="mono" style={{fontSize:12}}>{h.date}</td>
-                            <td><span style={{display:'inline-flex',alignItems:'center',gap:8}}>{c ? c.token : h.campaignId} <Tag kind={h.kind}>{h.kind==='sho'?'SHO':'SSO'}</Tag></span></td>
-                            <td className="camp-meta">{h.label}</td>
-                            <td className="mono">{fmtNum(h.amount)} {h.token} <span className="camp-meta">({fmtUSD(h.usd)})</span></td>
+                            <td className="mono" style={{fontSize:12}}>{h.claimedAt ? new Date(h.claimedAt).toLocaleDateString() : '—'}</td>
+                            <td><span style={{display:'inline-flex',alignItems:'center',gap:8}}>{f ? f.token : shortAddr(h.campaignAddress)} <Tag kind={h.factory}>{h.factory==='sho'?'SHO':'SSO'}</Tag></span></td>
+                            <td className="camp-meta">{h.factory==='sho' ? `Milestone ${h.index}` : `Epoch ${h.index+1}`}</td>
+                            <td className="mono">{fmtNum(fmtTokenAmount(h.amount))} {f ? (f.rewardTokenSymbol||f.token) : ''} {h.txHash && <a href={explorerTxUrl(h.txHash)} target="_blank" rel="noopener noreferrer" className="camp-meta">(tx)</a>}</td>
                           </tr>
                         );
                       })}
@@ -1982,8 +2309,9 @@ function TopNav({route, go, theme, setTheme, user}){
             ? <button className={`nav-chip ${is('/profile')?'active':''}`} onClick={()=>go('/profile')}><IcoCheckCirc size={12}/>{user.xhandle}</button>
             : <Btn kind="outline" size="sm" icon={IcoX} onClick={()=>go('/register')}>Register X</Btn>}
           {user.wallet
-            ? <button className={`nav-chip mono ${is('/profile')?'active':''}`} onClick={()=>go('/profile')}><IcoWallet size={12}/>{user.wallet}</button>
+            ? <button className={`nav-chip mono ${is('/profile')?'active':''}`} onClick={()=>go('/profile')}><IcoWallet size={12}/>{shortAddr(user.wallet)}</button>
             : <Btn size="sm" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>}
+          {user.wallet && !user.chainOk && <Btn kind="outline" size="sm" onClick={user.connectWallet}>Switch to {SCP_CONFIG.CHAIN_NAME}</Btn>}
         </div>
       </div>
     </div>
@@ -1992,7 +2320,7 @@ function TopNav({route, go, theme, setTheme, user}){
 
 function App(){
   const [route,go] = useHashRoute();
-  const user = useMockUser();
+  const user = useWallet();
   const [theme,setTheme] = useState(()=> localStorage.getItem('so_theme') || 'dark');
   const [toast,setToast] = useState(null);
   const notify = (m)=> setToast(m);
@@ -2005,7 +2333,8 @@ function App(){
   },[theme]);
 
   let view;
-  const parts = route.split('/').filter(Boolean);
+  const path = route.split('?')[0];
+  const parts = path.split('/').filter(Boolean);
   if(route==='/' ) view = <Landing go={go}/>;
   else if(parts[0]==='sho' && parts[1]==='create') view = <CreateWizard kind="sho" go={go} user={user} notify={notify}/>;
   else if(parts[0]==='sso' && parts[1]==='create') view = <CreateWizard kind="sso" go={go} user={user} notify={notify}/>;
@@ -2014,6 +2343,7 @@ function App(){
   else if(parts[0]==='sho') view = <Discover kind="sho" go={go}/>;
   else if(parts[0]==='sso') view = <Discover kind="sso" go={go}/>;
   else if(parts[0]==='register') view = <Register go={go} user={user} notify={notify}/>;
+  else if(parts[0]==='link-x') view = <LinkXCallback go={go} user={user} notify={notify}/>;
   else if(parts[0]==='profile') view = <Profile go={go} user={user} notify={notify}/>;
   else view = <Landing go={go}/>;
 

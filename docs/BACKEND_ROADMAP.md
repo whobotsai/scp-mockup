@@ -247,25 +247,56 @@ window elapses, claim succeeds — with zero manual steps.
 > that wouldn't verify on-chain. Also surfaces a real on-chain state the original frontend mock
 > never modeled at all — a milestone/epoch that's reached/finalized but still inside its 24h
 > challenge window (`status: "challenge_window"`) — since claiming during that window would
-> revert. **Frontend integration itself (the rest of this stage) hasn't started yet** — wiring
-> `public/index.html` to these endpoints, a real wallet connector, and the Create-campaign
-> wizard's actual `createCampaign()` submission remain open.
+> revert.
+>
+> **Frontend integration done** (`public/index.html`) — every mock-data seam from the original
+> prototype now has a real counterpart. `useWallet` replaces `useMockUser`: `connectWallet`
+> goes through `window.ethereum` (EIP-1193 — MetaMask or any compatible injected wallet),
+> prompting a network add/switch to Robinhood Chain Testnet if needed; `connectX` redirects to
+> `registration-service`'s real `/auth/x/start` OAuth flow, which (with `FRONTEND_URL` set)
+> hands the result back to a new `#/link-x` page that submits `Registry.registerHandle(...)`
+> itself using the connected wallet — `xhandle` is then read live from `Registry.handleOf`,
+> never cached, so it can't drift from what's actually on-chain. Discover/detail pages fetch
+> from `../api/` and normalize its responses into the shapes the existing UI already rendered;
+> the Create-campaign wizard resolves a token live against `GET /tokens/:address` (replacing
+> `resolveToken`/`TOKEN_REGISTRY`) and submits a real `SHOFactory.createCampaign(...)` /
+> `SSOFactory.createCampaign(...)` transaction (ERC20 `approve()` first when the reward token
+> isn't native ETH), reading the new campaign's address out of the `CampaignCreated` log rather
+> than a mock array push; claim buttons on both detail pages and the dashboard fetch a proof
+> from `GET /campaigns/:address/claim-proof` and call the campaign's real `claim(...)`. Ethers
+> and (for local dev) Babel are vendored into `public/vendor/` rather than pulled from a CDN, so
+> wallet/contract calls don't depend on a third-party host being reachable. A couple of honest,
+> narrow gaps surfaced doing this rather than being papered over: no USDC is deployed on this
+> testnet yet, so the wizard's USDC reward option is disabled until `SCP_CONFIG.USDC_ADDRESS`
+> is set; and a token's `website`/`twitter`/`holders`/ATH mcap still show `—` for the same
+> reason `../api/` returns `null` for them (see its own README).
+>
+> **Not verified from this sandbox** (no path to a real chain/OAuth provider here, same
+> caveat as `../keeper/README.md` and `../registration-service/README.md`): an actual
+> `createCampaign()`/`claim()`/`registerHandle()` transaction signed and mined against the
+> live testnet contracts, and a completed X OAuth round-trip through the new `#/link-x` page.
+> Validated everything short of that: the full JSX compiles cleanly (`@babel/preset-react`,
+> matching the exact `babel-standalone` version the page loads), and a headless-browser pass
+> with a mocked wallet + mocked `../api/` responses exercised every route (Discover, campaign
+> detail with live milestone/leaderboard/claim-status rendering, the full 5-step create wizard
+> through to its review screen, the dashboard) with no console or render errors, plus a
+> without-a-wallet pass confirming every page degrades to a clear loading/error/connect-prompt
+> state instead of crashing when the API or a wallet isn't available.
 
-- Build the read/aggregation API: campaign discovery and detail (replacing `SHO_CAMPAIGNS`/
-  `SSO_CAMPAIGNS`), leaderboards (replacing the mock `leaderboard()` generator), claimable
-  positions and claim-proof retrieval (replacing `MY_SHO_POSITIONS`/`MY_SSO_POSITIONS`/
-  `MY_CREATED_*`/`CLAIM_HISTORY`), and token profile lookups (replacing `TOKEN_REGISTRY`,
-  now sourced from the real Pons.family indexer instead of a hand-authored map).
-- Swap `useMockUser`'s fake `connectWallet`/`connectX` for a real wallet connector (e.g.
-  WalletConnect/wagmi) and a real OAuth redirect into the Registration service.
-- Wire the Create-campaign wizard to actually submit `createCampaign()` transactions instead
-  of pushing to a local array.
+- ~~Build the read/aggregation API~~ — done, see above.
+- ~~Swap `useMockUser`'s fake `connectWallet`/`connectX` for a real wallet connector and a real
+  OAuth redirect~~ — done, see above.
+- ~~Wire the Create-campaign wizard to actually submit `createCampaign()` transactions~~ —
+  done, see above.
 - Every mock-data seam identified in the audit work on this prototype (`resolveToken`,
-  `MY_CREATED_SHO.push`, etc.) gets a real counterpart here — this stage is explicitly the
-  "delete the mock data" milestone.
+  `MY_CREATED_SHO.push`, etc.) has a real counterpart now — this stage's "delete the mock
+  data" goal is met.
 
-**Exit criteria:** the existing frontend, pointed at testnet, behaves identically to the
-current mock-data build — same screens, same flows, real numbers, real wallet signatures.
+**Exit criteria:** the existing frontend, pointed at testnet, behaves identically to the old
+mock-data build — same screens, same flows, real numbers, real wallet signatures. Met, pending
+the live-chain/OAuth verification noted above (deferred the same way Stage 0/1's own live
+round-trips were — see those stages' notes — rather than blocking further work on a sandbox
+network limitation).
 
 ### Stage 3 — Security hardening (PRD §7 Phase 2, security-relevant subset)
 

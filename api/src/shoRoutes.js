@@ -50,21 +50,39 @@ function router(provider) {
     return milestones;
   }
 
+  // Reward token can be the campaign token itself, native ETH (address(0)), or a separate
+  // allowlisted stablecoin -- resolved here (rather than left for the frontend to make its own
+  // extra RPC calls for) since it's a genuine display need, same rationale as tokenTwapMcap.
+  async function resolveRewardToken(rewardTokenAddress, tokenAddress, tokenSymbol) {
+    if (rewardTokenAddress === ethers.ZeroAddress) return { rewardToken: rewardTokenAddress, rewardTokenSymbol: "ETH" };
+    if (rewardTokenAddress.toLowerCase() === tokenAddress.toLowerCase()) {
+      return { rewardToken: rewardTokenAddress, rewardTokenSymbol: tokenSymbol };
+    }
+    const symbol = await new ethers.Contract(rewardTokenAddress, ERC20_ABI, provider).symbol().catch(() => null);
+    return { rewardToken: rewardTokenAddress, rewardTokenSymbol: symbol };
+  }
+
   async function loadCampaignSummary(row) {
     const contract = new ethers.Contract(row.campaign_address, SHO_CAMPAIGN_ABI, provider);
     const now = Math.floor(Date.now() / 1000);
-    const [erc20Symbol, totalLocked, milestones, mcap] = await Promise.all([
+    const [erc20Name, erc20Symbol, totalLocked, milestones, mcap, rewardTokenAddress] = await Promise.all([
+      new ethers.Contract(row.token, ERC20_ABI, provider).name().catch(() => null),
       new ethers.Contract(row.token, ERC20_ABI, provider).symbol().catch(() => null),
       contract.totalLocked(),
       loadMilestones(contract, now),
       tokenTwapMcap(row.token),
+      contract.rewardToken(),
     ]);
+    const { rewardToken, rewardTokenSymbol } = await resolveRewardToken(rewardTokenAddress, row.token, erc20Symbol);
 
     return {
       id: row.campaign_address,
       contract: row.campaign_address,
+      name: erc20Name,
       token: erc20Symbol,
       tokenAddress: row.token,
+      rewardToken,
+      rewardTokenSymbol,
       creator: row.creator,
       locked: totalLocked.toString(),
       windowSeconds: Number(row.window_seconds),
