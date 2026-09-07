@@ -223,6 +223,34 @@ window elapses, claim succeeds — with zero manual steps.
 
 ### Stage 2 — API layer + frontend integration
 
+> **API layer built** (`../api/`, see its own README for the full breakdown). Every endpoint
+> below is live against real data — the keeper's indexed Postgres state plus direct contract
+> reads, never a second source of truth: `GET /sho/campaigns`(`/:address`, `/leaderboard`) and
+> the SSO equivalents replace `SHO_CAMPAIGNS`/`SSO_CAMPAIGNS`/the mock `leaderboard()`
+> generator; `GET /tokens/:address` replaces `TOKEN_REGISTRY`/`resolveToken` (though Pons.family
+> integration itself is still blocked — see `../keeper/README.md` — so this reads the ERC20
+> contract and the keeper's own TWAP samples directly instead, with `website`/`twitter`/
+> `holders` honestly returned as `null` rather than invented, since neither the contracts nor
+> the keeper index anything for them); `GET /wallets/:address/standings`, `/claims`, and
+> `/created` replace `MY_SHO_POSITIONS`/`MY_SSO_POSITIONS`/`MY_CREATED_*`/`CLAIM_HISTORY`; and
+> `GET /campaigns/:address/claim-proof` is the new endpoint an actual `claim()` transaction
+> depends on — not something the mock ever needed since it never submitted real transactions.
+> A real design split emerged while building this: leaderboard queries for a still-open
+> milestone/epoch are plain SQL (display-only, safe to be a fresh reimplementation since
+> nothing here gets posted on-chain), while the claim-proof endpoint's Merkle tree and the
+> displayed TWAP mcap are direct ports of the keeper's own logic (`merkleTree.js`/
+> `twapOracle.js`) — a claim proof has to byte-match what the keeper actually posted, or
+> `claim()` reverts. Validated against a real seeded Postgres instance while building this: the
+> SHO/SSO leaderboard SQL was checked against known net-buy/epoch-score arithmetic, and the
+> claim-proof endpoint was confirmed to both succeed with a genuine root and correctly *refuse*
+> one built against a deliberately wrong stored root, rather than silently handing back a proof
+> that wouldn't verify on-chain. Also surfaces a real on-chain state the original frontend mock
+> never modeled at all — a milestone/epoch that's reached/finalized but still inside its 24h
+> challenge window (`status: "challenge_window"`) — since claiming during that window would
+> revert. **Frontend integration itself (the rest of this stage) hasn't started yet** — wiring
+> `public/index.html` to these endpoints, a real wallet connector, and the Create-campaign
+> wizard's actual `createCampaign()` submission remain open.
+
 - Build the read/aggregation API: campaign discovery and detail (replacing `SHO_CAMPAIGNS`/
   `SSO_CAMPAIGNS`), leaderboards (replacing the mock `leaderboard()` generator), claimable
   positions and claim-proof retrieval (replacing `MY_SHO_POSITIONS`/`MY_SSO_POSITIONS`/

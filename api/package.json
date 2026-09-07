@@ -1,0 +1,20 @@
+{
+  "name": "api",
+  "version": "0.1.0",
+  "description": "Strong Commitment Protocol API layer (Stage 2) -- read/aggregation service in front of the keeper's Postgres and direct contract reads. Not a source of truth: everything it returns is reconstructable from chain history plus the keeper's published snapshots, per ../docs/BACKEND_ROADMAP.md's Stage 2 stack guidance.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node test/merkleTree.test.js && node test/twap.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "ethers": "^6.17.0",
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  }
+}
