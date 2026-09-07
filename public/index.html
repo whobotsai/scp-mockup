@@ -577,9 +577,21 @@ const ERC20_ABI = [
   "function name() view returns (string)",
   "function symbol() view returns (string)",
   "function decimals() view returns (uint8)",
+  "function balanceOf(address account) view returns (uint256)",
   "function allowance(address owner, address spender) view returns (uint256)",
   "function approve(address spender, uint256 amount) returns (bool)",
 ];
+// Custom errors (not plain require strings) that OpenZeppelin v5 contracts revert with --
+// ethers can't decode a revert into e.reason without knowing these, so shortError() below
+// decodes them itself from e.data as a fallback. Covers the two ways a createCampaign() can
+// revert on the reward-token transferFrom, and the one way an admin call like setAttestor
+// reverts for the wrong caller -- all confirmed live in this project's own testing.
+const KNOWN_ERRORS_ABI = [
+  "error ERC20InsufficientBalance(address sender, uint256 balance, uint256 needed)",
+  "error ERC20InsufficientAllowance(address spender, uint256 allowance, uint256 needed)",
+  "error OwnableUnauthorizedAccount(address account)",
+];
+const KNOWN_ERRORS_IFACE = new window.ethers.Interface(KNOWN_ERRORS_ABI);
 const CAMPAIGN_ABI = [
   // claim()'s signature is identical for SHOCampaign and SSOCampaign (see
   // ../api/src/claimRoutes.js's own header) so one fragment covers both.
@@ -621,8 +633,33 @@ function explorerTxUrl(hash){ return `${SCP_CONFIG.EXPLORER_URL}/tx/${hash}`; }
 // string a few different ways depending on where the failure happened (wallet rejection vs.
 // a contract revert vs. a network error), so check the specific spots before falling back to
 // whatever's in .message (often a wall of raw RPC JSON).
+// Best-effort decode of a custom-error revert ethers itself can't name (see KNOWN_ERRORS_ABI
+// above) -- checks the handful of raw-data spots a failed call's error can carry that data in,
+// depending on where in the request pipeline it surfaced.
+function decodeKnownError(e){
+  const data = e?.data || e?.info?.error?.data || e?.error?.data || e?.revert?.data;
+  if(!data || typeof data !== 'string') return null;
+  try {
+    const parsed = KNOWN_ERRORS_IFACE.parseError(data);
+    if(!parsed) return null;
+    if(parsed.name==='ERC20InsufficientBalance'){
+      const [,balance,needed] = parsed.args;
+      return `Insufficient token balance: wallet has ${fmtTokenAmount(balance)}, needs ${fmtTokenAmount(needed)}.`;
+    }
+    if(parsed.name==='ERC20InsufficientAllowance'){
+      const [,allowance,needed] = parsed.args;
+      return `Insufficient allowance: approved ${fmtTokenAmount(allowance)}, needs ${fmtTokenAmount(needed)}.`;
+    }
+    if(parsed.name==='OwnableUnauthorizedAccount'){
+      return `Connected wallet (${shortAddr(parsed.args[0])}) is not authorized to call this -- wrong wallet connected?`;
+    }
+  } catch(err){ /* not one of the errors we know how to decode */ }
+  return null;
+}
 function shortError(e){
   if(!e) return 'unknown error';
+  const decoded = decodeKnownError(e);
+  if(decoded) return decoded;
   return e.reason || e.shortMessage || e?.info?.error?.message || e?.error?.message || e.message || String(e);
 }
 
@@ -1710,6 +1747,22 @@ function CreateWizard({kind, go, user, notify}){
       const amountWei = window.ethers.parseUnits(String(form.amount||'0'), decimals);
       const signer = await user.getSigner();
       const factoryAddr = isSHO ? SCP_CONFIG.SHO_FACTORY_ADDRESS : SCP_CONFIG.SSO_FACTORY_ADDRESS;
+
+      // Check the wallet can actually cover this before spending a transaction (and its gas)
+      // finding out -- a failed createCampaign() reverts with an OZ v5 custom error ethers
+      // can't name on its own (see shortError's decodeKnownError), so this is worth catching
+      // here with a clear message rather than only after a failed on-chain attempt.
+      if(rewardToken === window.ethers.ZeroAddress){
+        const ethBalance = await readProvider().getBalance(user.wallet);
+        if(ethBalance < amountWei){
+          throw new Error(`Insufficient ${SCP_CONFIG.NATIVE_SYMBOL} balance: wallet has ${fmtTokenAmount(ethBalance)}, this campaign needs ${form.amount} ${SCP_CONFIG.NATIVE_SYMBOL} (plus gas).`);
+        }
+      } else {
+        const tokenBalance = await new window.ethers.Contract(rewardToken, ERC20_ABI, readProvider()).balanceOf(user.wallet);
+        if(tokenBalance < amountWei){
+          throw new Error(`Insufficient ${denomLabel} balance: wallet has ${fmtTokenAmount(tokenBalance)}, this campaign needs ${form.amount} ${denomLabel}.`);
+        }
+      }
 
       if(rewardToken !== window.ethers.ZeroAddress){
         const erc20 = new window.ethers.Contract(rewardToken, ERC20_ABI, signer);
