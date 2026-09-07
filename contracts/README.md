@@ -83,6 +83,21 @@ To deploy the same thing to a different network later (including mainnet, chain 
 PRD.md's header), just point `.env` at that network's RPC and a funded key — nothing else
 about `scripts/deploy.js` changes.
 
+### Updating Registry after a contract-logic change
+
+Registry is a plain `Ownable` contract with no proxy/upgrade path, so a fix to its logic (not
+just `setAttestor`-style config) can't be applied to the already-deployed instance — it has to
+be a brand-new contract at a brand-new address. `npm run deploy` would technically do that, but
+it also redeploys `SHOFactory`/`SSOFactory` alongside it, which is unwanted churn when only
+`Registry.sol` actually changed. Use `npm run redeploy-registry` instead: same `RPC_URL`/
+`DEPLOYER_PRIVATE_KEY` as above, reuses the current deployment record's `owner`/`attestor` (no
+new secrets), deploys just the new `Registry`, and updates `deployments/<chainId>.json` in
+place. It prints the follow-up steps this can't do for you — the new Registry starts from an
+empty `handleOf`/`walletOfHandle`, so every already-registered wallet needs to call
+`registerHandle()` again, `public/index.html` and `../keeper/.env` both need the new address,
+and `../keeper/`'s `handle_registrations` table needs truncating rather than left holding rows
+resolved against the old contract.
+
 ## Deploying a test token + pool, for the keeper to actually index something
 
 `../keeper/`'s Chain Indexer needs a real token with a real pool to index anything (see
