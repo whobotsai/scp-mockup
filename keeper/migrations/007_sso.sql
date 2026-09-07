@@ -34,9 +34,12 @@ CREATE INDEX IF NOT EXISTS sso_posts_campaign_epoch_wallet
 -- HandleRegistered events (registrationIndexer.js) -- a Solidity mapping isn't reverse-
 -- queryable on-chain, and the Social Indexer needs exactly the reverse direction (given a
 -- post's x_handle, find the wallet it belongs to). Keyed by wallet, matching the contract's
--- own "one current handle per wallet" semantics (calling registerHandle again overwrites);
--- x_handle isn't declared unique here since nothing on-chain enforces that either -- see
--- socialIndexer.js's own comment on this simplification.
+-- own "one current handle per wallet" semantics (calling registerHandle again overwrites).
+-- x_handle still isn't declared unique at the DB level -- Registry.sol's walletOfHandle now
+-- enforces one-wallet-per-handle on-chain (registerHandle reverts if the handle already
+-- belongs to a different wallet), so this table can only ever hold one row per handle going
+-- forward; db.js's resolveWalletForHandle also orders by updated_at DESC as defense-in-depth
+-- for any rows indexed before that on-chain check existed.
 CREATE TABLE IF NOT EXISTS handle_registrations (
   wallet      text PRIMARY KEY,
   x_handle    text NOT NULL,

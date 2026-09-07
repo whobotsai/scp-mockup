@@ -18,6 +18,20 @@ contract Registry is Ownable {
 
     mapping(address => string) public handleOf;
 
+    /// Reverse index enforcing "one wallet per X handle at a time" -- keyed by a
+    /// case-normalized hash of the handle (X handles aren't case-sensitive) rather than the
+    /// handle string itself. Without this, nothing stopped the same X account from completing
+    /// OAuth again from a second wallet and getting a second valid attestation for it (X's own
+    /// login flow has no problem being repeated, and the old registerHandle had no check at
+    /// all) -- both wallets would then show that handle as "linked" and the keeper's
+    /// handle->wallet resolution (keeper/src/db.js resolveWalletForHandle) had no principled
+    /// way to pick between them, silently crediting SSO post/epoch scoring to whichever row
+    /// Postgres happened to return first. This mapping makes that impossible on-chain: a
+    /// handle already linked to a *different* wallet must be released (by that wallet
+    /// registering a different handle, or a future admin-recovery path) before it can be
+    /// linked again elsewhere.
+    mapping(bytes32 => address) public walletOfHandle;
+
     event AttestorUpdated(address indexed attestor);
     event HandleRegistered(address indexed wallet, string xHandle);
 
@@ -39,7 +53,38 @@ contract Registry is Ownable {
     function registerHandle(string calldata xHandle, bytes calldata attestation) external {
         bytes32 digest = keccak256(abi.encodePacked(msg.sender, xHandle)).toEthSignedMessageHash();
         require(ECDSA.recover(digest, attestation) == attestor, "bad attestation");
+
+        bytes32 key = _normalizedKey(xHandle);
+        address currentHolder = walletOfHandle[key];
+        require(currentHolder == address(0) || currentHolder == msg.sender, "handle already linked to another wallet");
+
+        // registerHandle can already be called again by the same wallet to switch to a
+        // *different* handle (the "one current handle per wallet" semantics the old code
+        // already had) -- when that happens, release the wallet's previous handle so it isn't
+        // left permanently squatted and unregistrable by anyone else.
+        string memory previous = handleOf[msg.sender];
+        if (bytes(previous).length != 0) {
+            delete walletOfHandle[_normalizedKey(previous)];
+        }
+
         handleOf[msg.sender] = xHandle;
+        walletOfHandle[key] = msg.sender;
         emit HandleRegistered(msg.sender, xHandle);
+    }
+
+    // ASCII-lowercases `s` and hashes the result, so two differently-cased handles (X isn't
+    // case-sensitive about the letters after the leading @) collide into the same
+    // walletOfHandle slot -- matching keeper/src/db.js's own `lower(x_handle)` lookup. X
+    // handles are ASCII (letters/digits/underscore, optionally a leading "@"), so a full
+    // Unicode case-fold isn't needed here.
+    function _normalizedKey(string memory s) private pure returns (bytes32) {
+        bytes memory original = bytes(s);
+        bytes memory lower = new bytes(original.length);
+        for (uint256 i = 0; i < original.length; i++) {
+            uint8 c = uint8(original[i]);
+            if (c >= 0x41 && c <= 0x5A) c += 32; // 'A'-'Z' -> 'a'-'z'
+            lower[i] = bytes1(c);
+        }
+        return keccak256(lower);
     }
 }

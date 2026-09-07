@@ -212,9 +212,18 @@ async function upsertHandleRegistration(wallet, xHandle, updatedAt) {
 /// wallet has ever registered this handle -- socialIndexer.js treats that as "post doesn't
 /// qualify," not an error (PRD section 12.2: "a post from an unregistered account never
 /// enters sso_posts at all").
+///
+/// ORDER BY updated_at DESC LIMIT 1, not just LIMIT 1: Registry.sol now rejects registering a
+/// handle that's already linked to a *different* wallet (walletOfHandle), so going forward this
+/// table can only ever hold one row per handle. This ordering is defense-in-depth for rows
+/// indexed before that on-chain fix -- back when two HandleRegistered events for the same
+/// handle from different wallets could both land here, an unordered LIMIT 1 let Postgres return
+/// either one arbitrarily (and inconsistently across re-plans), silently crediting SSO score to
+/// whichever wallet the query happened to prefer. Most-recently-registered now wins
+/// deterministically, matching Registry.handleOf's own "last registerHandle call wins" semantics.
 async function resolveWalletForHandle(xHandle) {
   const { rows } = await pool.query(
-    "SELECT wallet FROM handle_registrations WHERE lower(x_handle) = lower($1) LIMIT 1",
+    "SELECT wallet FROM handle_registrations WHERE lower(x_handle) = lower($1) ORDER BY updated_at DESC LIMIT 1",
     [xHandle]
   );
   return rows.length ? rows[0].wallet : null;
