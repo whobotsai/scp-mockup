@@ -7,7 +7,7 @@ test("net buyer ranks with their net figure", () => {
     { wallet: "0xA", side: "buy", usd_value: "100" },
     { wallet: "0xA", side: "sell", usd_value: "30" },
   ];
-  assertEqual(computeNetBuyVolume(trades), [{ wallet: "0xA", netBuyUsd: 70 }]);
+  assertEqual(computeNetBuyVolume(trades), [{ wallet: "0xA", score: 70 }]);
 });
 
 test("net seller is excluded entirely, not floored to zero", () => {
@@ -34,9 +34,9 @@ test("sorted descending by net-buy volume, multiple wallets", () => {
     { wallet: "0xC", side: "sell", usd_value: "20" },
   ];
   assertEqual(computeNetBuyVolume(trades), [
-    { wallet: "0xB", netBuyUsd: 200 },
-    { wallet: "0xC", netBuyUsd: 100 },
-    { wallet: "0xA", netBuyUsd: 50 },
+    { wallet: "0xB", score: 200 },
+    { wallet: "0xC", score: 100 },
+    { wallet: "0xA", score: 50 },
   ]);
 });
 

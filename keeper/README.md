@@ -1,46 +1,56 @@
-# Keeper Service — Stage 1, build-order steps 1-3
+# Keeper Service — Stage 1, build-order steps 1-4
 
-Implements the first three slices of [`../docs/KEEPER_SERVICE_DESIGN.md`](../docs/KEEPER_SERVICE_DESIGN.md)'s
-suggested build order (§8): Chain Indexer (campaign discovery + trade indexing), the Volume
-Aggregator, the Price/TWAP Oracle, the Milestone Engine's crossing detection, the Snapshot
-Publisher, and the On-chain Poster — exercised against the real testnet SHOFactory from
+Implements the first four slices of [`../docs/KEEPER_SERVICE_DESIGN.md`](../docs/KEEPER_SERVICE_DESIGN.md)'s
+suggested build order (§8): the SHO Chain Indexer (campaign discovery + trade indexing), the
+Volume Aggregator, the Price/TWAP Oracle, the Milestone Engine, the SSO Social Indexer
+(campaign discovery + post indexing + registration indexing) and Epoch Engine, the Snapshot
+Publisher, and the On-chain Poster — exercised against the real testnet deployments in
 [`../contracts/deployments/46630.json`](../contracts/deployments/46630.json). Root posting is
-now automatic too (with one deliberate simplification, see below) — the whole SHO path from
-"a milestone crosses" to "the root is on-chain" now runs without a human in the loop.
+automatic for both campaign types (one deliberate simplification, see below) — the whole path
+from "a milestone crosses / an epoch's window closes" to "the root is on-chain" runs without a
+human in the loop, for SHO and SSO alike.
 
 ```
 src/
-  db.js                 Postgres access — campaigns, sho_trades, token_pools, snapshots, root_submissions, cursors
-  campaignIndexer.js    Watches SHOFactory's CampaignCreated, populates `campaigns`
-  tradeIndexer.js       Per-campaign trade indexing, dispatches by venue to a trade source
-  volumeAggregator.js   Net-buy volume per wallet (PRD §2.2) — pure function + DB wrapper
-  priceSampler.js       Samples each pool's instantaneous price into sho_price_samples
-  twapOracle.js         Time-weighted average price over a real 30-minute window
-  rewardAllocator.js    Proportional reward split for a milestone's leaderboard
-  merkleTree.js         Direct port of contracts/test/helpers/merkle.js — see its own header
-  milestoneEngine.js    Checks every unreached milestone against the TWAP mcap each tick
-  snapshotPublisher.js  Pins a computed snapshot to IPFS (Lighthouse.storage), see below
-  onchainPoster.js      Posts a published snapshot's root on-chain, see below
-  alerts.js             Missed-root alert — logs loudly if a crossing goes too long unposted
+  db.js                    Postgres access — campaigns, sho_trades, sso_posts, token_pools,
+                           handle_registrations, snapshots, root_submissions, cursors
+  campaignIndexer.js       Watches SHOFactory's CampaignCreated, populates `campaigns`
+  tradeIndexer.js          Per-campaign trade indexing, dispatches by venue to a trade source
+  volumeAggregator.js      Net-buy volume per wallet (PRD §2.2) — pure function + DB wrapper
+  priceSampler.js          Samples each pool's instantaneous price into sho_price_samples
+  twapOracle.js            Time-weighted average price over a real 30-minute window
+  milestoneEngine.js       Checks every unreached SHO milestone against the TWAP mcap each tick
+  ssoCampaignIndexer.js    Watches SSOFactory's CampaignCreated, populates `campaigns`
+  registrationIndexer.js   Watches Registry's HandleRegistered, populates `handle_registrations`
+  socialIndexer.js         Polls X for posts matching an SSO campaign's keyword, see below
+  socialScoreAggregator.js Per-account epoch score, best-5-posts cap (PRD §12.2) — pure + DB wrapper
+  epochEngine.js           Checks every unfinalized SSO epoch's endsAt against wall-clock time
+  rewardAllocator.js       Proportional reward split for a milestone/epoch leaderboard — shared
+  merkleTree.js            Direct port of contracts/test/helpers/merkle.js — see its own header
+  snapshotPublisher.js     Pins a computed snapshot to IPFS (Lighthouse.storage), see below
+  onchainPoster.js         Posts a published snapshot's root on-chain (SHO or SSO), see below
+  alerts.js                Missed-root alert — logs loudly if a crossing/close goes too long unposted
   tradeSources/
     types.js             The normalized TradeEvent shape every adapter produces
     uniswapV2.js          Testnet venue — validated against a real deployed pool, see below
     uniswapV4.js          Mainnet venue — implemented, not yet validated, see caveats below
     ponsBondingCurve.js   NOT IMPLEMENTED, and deliberately not used for now — see below
-  abis/sho.js           Minimal hand-picked ABI fragments (not the full contract interface)
+  abis/sho.js           Minimal hand-picked SHO ABI fragments (not the full contract interface)
+  abis/sso.js           Same, for SSOFactory/SSOCampaign/Registry
   index.js              Entry point: polling loop wiring all of the above together
 migrations/
   001_init.sql               Postgres schema (subset of the full design doc's data model)
   002_token_pools.sql         Per-token pool config (originally V4-only)
   003_multi_venue_pools.sql   Generalized 002 to carry either venue's config
-  004_snapshots.sql           Milestone Engine's frozen leaderboard snapshots
+  004_snapshots.sql           Milestone/Epoch Engine's frozen leaderboard snapshots
   005_price_samples.sql       Price/TWAP Oracle's raw price samples
   006_root_submissions.sql    On-chain Poster's proposed/confirmed/failed tracking table
+  007_sso.sql                 SSO's campaigns columns, sso_posts, handle_registrations
 scripts/
   register-token-pool.js     One-off: tell the indexer where a token's real pool lives
   fast-forward-cursor.js     One-off: skip a cursor past a backfill gap that's too slow to catch up
-  post-milestone-root.js     Manual override/backfill — normally onchainPoster.js does this
-  claim-milestone.js         Claims a wallet's share of an already-posted milestone reward
+  post-milestone-root.js     Manual SHO override/backfill — normally onchainPoster.js does this
+  claim-milestone.js         Claims a wallet's share of an already-posted milestone/epoch reward
 ```
 
 ## Deliberate simplification: no Pons phase, self-deployed AMM on testnet
@@ -114,6 +124,26 @@ stays in the codebase, unused for now, ready for whenever mainnet is in scope.
   transaction sent`, with no false missed-root alert (an earlier version of this check was
   gated behind a successful IPFS publish and got that exact case wrong -- fixed by decoupling
   the two entirely).
+- **Social Indexer + Epoch Engine** (build-order step 4, SSO): `ssoCampaignIndexer.js` and
+  `registrationIndexer.js` watch `SSOFactory.CampaignCreated` and `Registry.HandleRegistered`
+  respectively, the same backfill/cursor/progress-logging pattern as the SHO indexers.
+  `socialIndexer.js` polls X for posts matching each open campaign's keyword within its
+  currently-open epoch, resolves each poster's wallet via the indexed registration table,
+  applies PRD §12.5's account-age/follower gates, and stores every qualifying post.
+  `socialScoreAggregator.js` sums each account's best 5 posts per epoch (PRD §12.2) into the
+  same `[{wallet, score}]` shape `volumeAggregator.js` produces for SHO — `rewardAllocator.js`
+  and `merkleTree.js` are reused completely unmodified for SSO, exactly as
+  KEEPER_SERVICE_DESIGN.md §4.5 intends. `epochEngine.js` checks every unfinalized epoch
+  against wall-clock time (no market data at all, PRD §12.3) and computes/stores a snapshot
+  once an epoch's window closes. `onchainPoster.js` now dispatches by campaign type — the same
+  module posts `postMilestoneRoot` (SHO) or `postEpochRoot` (SSO) automatically. 9 new unit
+  tests (14 total across the two new pure-logic modules combined with existing coverage), all
+  passing without needing live infrastructure. **Not yet exercised against a live X account**
+  -- no `X_BEARER_TOKEN` was available while building this, consistent with
+  registration-service's own paused OAuth verification (neither has ever completed a real
+  round-trip against X's API). See `socialIndexer.js`'s own header comment for a known X API
+  tier limitation (recent-search only covers 7 days, short of a 30-day epoch's full window)
+  that isn't a code defect, and revisit alongside that OAuth work during frontend integration.
 
 **IPFS publishing itself is deliberately paused on a network issue, not a code bug.** Every
 upload attempt against `node.lighthouse.storage` fails with `UND_ERR_CONNECT_TIMEOUT` at the
@@ -189,8 +219,13 @@ npm run migrate            # applies every migrations/*.sql file
 npm start                  # polls for campaigns + trades + logs volume aggregator output
 ```
 
-`npm test` runs every pure-logic unit test (29 total, no `.env`/DB/RPC needed) — this is what's
+`npm test` runs every pure-logic unit test (41 total, no `.env`/DB/RPC needed) — this is what's
 actually verifiable without live infrastructure.
+
+For SSO, also set `SSO_FACTORY_ADDRESS`/`SSO_FACTORY_DEPLOY_BLOCK`,
+`REGISTRY_ADDRESS`/`REGISTRY_DEPLOY_BLOCK`, and `X_BEARER_TOKEN` (see `.env.example`'s
+comments) — all optional, same posture as `KEEPER_PRIVATE_KEY`/`LIGHTHOUSE_API_KEY`. Leaving
+any of them unset just keeps the keeper SHO-only, logged rather than errored.
 
 To set up a full test loop yourself (token, pool, campaign, trade), see
 `../contracts/README.md`'s "Deploying a test token + pool" section. Once a milestone crosses

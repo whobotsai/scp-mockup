@@ -179,6 +179,30 @@ manually walked through milestone-reached / claim by hand (no automated keeper y
 > points at a routing/ISP issue to that one API origin (an AWS `ap-south-1` address), not a
 > code defect or a global outage. Left as an explicit, loud failure (logged, not silently
 > swallowed) rather than guessed at further; retry from a different network once convenient.
+>
+> **Build-order step 4 built: Social Indexer + Epoch Engine (SSO).** `ssoCampaignIndexer.js`
+> and `registrationIndexer.js` index `SSOFactory.CampaignCreated` and
+> `Registry.HandleRegistered` the same way the SHO indexers already do; `socialIndexer.js`
+> polls X for keyword-matching posts within each campaign's currently-open epoch, resolves
+> wallets via the indexed registration table, and applies PRD §12.5's account-age/follower
+> gates before a post ever counts. `socialScoreAggregator.js` produces the exact same
+> `[{wallet, score}]` shape `volumeAggregator.js` already produces for SHO — enough that
+> `rewardAllocator.js` and `merkleTree.js` needed zero changes to work for SSO, which is
+> exactly what KEEPER_SERVICE_DESIGN.md §4.5 means by "genuinely shared code." `epochEngine.js`
+> mirrors `milestoneEngine.js`, checking wall-clock time instead of a TWAP crossing (PRD §12.3:
+> SSO doesn't depend on price at all). `onchainPoster.js` now dispatches by campaign factory to
+> call `postMilestoneRoot` or `postEpochRoot` automatically — both campaign types share one
+> On-chain Poster, Snapshot Publisher, and missed-root alert, unmodified. Along the way,
+> `netBuyUsd` was renamed to `score` in `rewardAllocator.js`/`volumeAggregator.js` — a
+> deliberate, low-risk rename to the design doc's own generic terminology, not a behavior
+> change (all existing tests updated and still passing). 9 new unit tests (41 total across the
+> whole keeper). **Not yet exercised against a live X account** — no `X_BEARER_TOKEN` was
+> available while building this, the same paused-verification status as
+> registration-service's own OAuth flow (neither has ever completed a real round-trip against
+> X's API); `socialIndexer.js`'s own header comment also flags a real X API tier limit
+> (recent-search only covers 7 days, short of a 30-day epoch) that's a plan/access decision,
+> not a code defect. Revisit alongside that OAuth work once frontend integration gives both a
+> reason to actually exercise X's live API.
 
 - Chain indexer against the testnet deployment: subscribe to the campaigning token's Pons
   bonding-curve contract and (post-graduation) its Uniswap V4 pool (PRD §3.2).

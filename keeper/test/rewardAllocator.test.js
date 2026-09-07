@@ -7,15 +7,15 @@ test("empty leaderboard allocates nothing", () => {
 });
 
 test("a single entry gets the entire reward", () => {
-  const result = allocateProportional([{ wallet: "0xA", netBuyUsd: 100 }], 1000n);
+  const result = allocateProportional([{ wallet: "0xA", score: 100 }], 1000n);
   assertEqual(result, [{ account: "0xA", amount: 1000n }]);
 });
 
 test("two equal entries split evenly", () => {
   const result = allocateProportional(
     [
-      { wallet: "0xA", netBuyUsd: 100 },
-      { wallet: "0xB", netBuyUsd: 100 },
+      { wallet: "0xA", score: 100 },
+      { wallet: "0xB", score: 100 },
     ],
     1000n
   );
@@ -25,11 +25,11 @@ test("two equal entries split evenly", () => {
   ]);
 });
 
-test("allocation is proportional to netBuyUsd", () => {
+test("allocation is proportional to score", () => {
   const result = allocateProportional(
     [
-      { wallet: "0xA", netBuyUsd: 300 },
-      { wallet: "0xB", netBuyUsd: 100 },
+      { wallet: "0xA", score: 300 },
+      { wallet: "0xB", score: 100 },
     ],
     1000n
   );
@@ -41,9 +41,9 @@ test("allocation is proportional to netBuyUsd", () => {
 
 test("the sum of all allocations always exactly equals totalReward, remainder goes to the top entry", () => {
   const leaderboard = [
-    { wallet: "0xA", netBuyUsd: 333.33 },
-    { wallet: "0xB", netBuyUsd: 333.33 },
-    { wallet: "0xC", netBuyUsd: 333.34 },
+    { wallet: "0xA", score: 333.33 },
+    { wallet: "0xB", score: 333.33 },
+    { wallet: "0xC", score: 333.34 },
   ];
   const totalReward = 1000n;
   const result = allocateProportional(leaderboard, totalReward);
@@ -53,8 +53,8 @@ test("the sum of all allocations always exactly equals totalReward, remainder go
 
 test("a large realistic wei-scale reward distributes without precision loss", () => {
   const leaderboard = [
-    { wallet: "0xA", netBuyUsd: 40.13 },
-    { wallet: "0xB", netBuyUsd: 9.87 },
+    { wallet: "0xA", score: 40.13 },
+    { wallet: "0xB", score: 9.87 },
   ];
   const totalReward = 1_990_000_000_000_000_000n; // 1.99 ETH in wei, e.g. this project's own test campaign
   const result = allocateProportional(leaderboard, totalReward);

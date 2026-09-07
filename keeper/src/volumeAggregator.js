@@ -8,7 +8,11 @@ const db = require("./db");
 
 /// Pure function: no I/O, so it's exhaustively unit-testable without a database.
 /// @param trades [{wallet, side, usd_value}] — every trade in the campaign's current window.
-/// @returns [{wallet, netBuyUsd}], sorted descending by netBuyUsd, net-negative wallets omitted.
+/// @returns [{wallet, score}], sorted descending by score (net-buy USD here), net-negative
+///   wallets omitted. `score` is the generic field name rewardAllocator.js's
+///   allocateProportional expects — KEEPER_SERVICE_DESIGN.md §4.5 calls this leaderboard
+///   shape shared between SHO and SSO ("allocate ... proportionally to their score"), so
+///   socialScoreAggregator.js's SSO equivalent produces the exact same shape.
 function computeNetBuyVolume(trades) {
   const byWallet = new Map();
   for (const t of trades) {
@@ -17,9 +21,9 @@ function computeNetBuyVolume(trades) {
   }
 
   return Array.from(byWallet.entries())
-    .filter(([, netBuyUsd]) => netBuyUsd > 0)
-    .map(([wallet, netBuyUsd]) => ({ wallet, netBuyUsd }))
-    .sort((a, b) => b.netBuyUsd - a.netBuyUsd);
+    .filter(([, score]) => score > 0)
+    .map(([wallet, score]) => ({ wallet, score }))
+    .sort((a, b) => b.score - a.score);
 }
 
 /// DB-backed wrapper: pulls the campaign's trailing-window trades and applies the pure

@@ -17,16 +17,17 @@ async function setCursor(key, lastBlock) {
   );
 }
 
+/// c.windowSeconds: SHO only, null for an SSO row. c.keyword: SSO only, null for an SHO row.
 async function upsertCampaign(c) {
   await pool.query(
     `INSERT INTO campaigns
        (campaign_id, factory, campaign_address, token, reward_token, creator,
-        created_at, duration_seconds, leaderboard_size, window_seconds)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        created_at, duration_seconds, leaderboard_size, window_seconds, keyword)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
      ON CONFLICT (campaign_address) DO NOTHING`,
     [
       c.campaignId, c.factory, c.campaignAddress, c.token, c.rewardToken, c.creator,
-      c.createdAt, c.durationSeconds, c.leaderboardSize, c.windowSeconds,
+      c.createdAt, c.durationSeconds, c.leaderboardSize, c.windowSeconds ?? null, c.keyword ?? null,
     ]
   );
 }
@@ -34,6 +35,11 @@ async function upsertCampaign(c) {
 async function listCampaigns() {
   const { rows } = await pool.query("SELECT * FROM campaigns ORDER BY created_at ASC");
   return rows;
+}
+
+async function getCampaign(campaignAddress) {
+  const { rows } = await pool.query("SELECT * FROM campaigns WHERE campaign_address = $1", [campaignAddress]);
+  return rows[0] || null;
 }
 
 async function insertTrade(t) {
@@ -189,12 +195,67 @@ async function overdueUnconfirmedSnapshots(slaMs) {
   return rows;
 }
 
+/// Upserts the current (wallet -> xHandle) direction of Registry.sol's handleOf mapping, from
+/// an indexed HandleRegistered event. Last write wins per wallet, same as the contract itself
+/// (calling registerHandle again just overwrites) -- see migrations/007_sso.sql's own comment
+/// on why this table is keyed by wallet, not x_handle.
+async function upsertHandleRegistration(wallet, xHandle, updatedAt) {
+  await pool.query(
+    `INSERT INTO handle_registrations (wallet, x_handle, updated_at) VALUES ($1,$2,$3)
+     ON CONFLICT (wallet) DO UPDATE SET x_handle = EXCLUDED.x_handle, updated_at = EXCLUDED.updated_at
+     WHERE EXCLUDED.updated_at >= handle_registrations.updated_at`,
+    [wallet, xHandle, updatedAt]
+  );
+}
+
+/// Case-insensitive, since X handles aren't case-sensitive in practice. Returns null if no
+/// wallet has ever registered this handle -- socialIndexer.js treats that as "post doesn't
+/// qualify," not an error (PRD section 12.2: "a post from an unregistered account never
+/// enters sso_posts at all").
+async function resolveWalletForHandle(xHandle) {
+  const { rows } = await pool.query(
+    "SELECT wallet FROM handle_registrations WHERE lower(x_handle) = lower($1) LIMIT 1",
+    [xHandle]
+  );
+  return rows.length ? rows[0].wallet : null;
+}
+
+/// Upsert, not insert-once: a post's engagement metrics (and therefore its score) keep
+/// changing for as long as the epoch stays open, so re-polling the same post needs to refresh
+/// its stored row rather than freeze it at whatever it was the first time it was seen.
+async function insertSsoPost(p) {
+  await pool.query(
+    `INSERT INTO sso_posts
+       (campaign_address, post_id, wallet, x_handle, epoch_index, retweets, quotes, replies, likes, score, posted_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+     ON CONFLICT (campaign_address, post_id) DO UPDATE SET
+       retweets = EXCLUDED.retweets,
+       quotes = EXCLUDED.quotes,
+       replies = EXCLUDED.replies,
+       likes = EXCLUDED.likes,
+       score = EXCLUDED.score`,
+    [
+      p.campaignAddress, p.postId, p.wallet, p.xHandle, p.epochIndex,
+      p.retweets, p.quotes, p.replies, p.likes, p.score, p.postedAt,
+    ]
+  );
+}
+
+async function postsForEpoch(campaignAddress, epochIndex) {
+  const { rows } = await pool.query(
+    "SELECT wallet, score FROM sso_posts WHERE campaign_address = $1 AND epoch_index = $2",
+    [campaignAddress, epochIndex]
+  );
+  return rows;
+}
+
 module.exports = {
   pool,
   getCursor,
   setCursor,
   upsertCampaign,
   listCampaigns,
+  getCampaign,
   insertTrade,
   tradesForWallet,
   getTokenPool,
@@ -210,4 +271,8 @@ module.exports = {
   getRootSubmission,
   upsertRootSubmission,
   overdueUnconfirmedSnapshots,
+  upsertHandleRegistration,
+  resolveWalletForHandle,
+  insertSsoPost,
+  postsForEpoch,
 };

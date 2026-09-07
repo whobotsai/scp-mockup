@@ -4,7 +4,7 @@
 // point would silently lose or misallocate dust.
 "use strict";
 
-/// @param leaderboard [{wallet, netBuyUsd}], already sorted/limited to the top N -- this
+/// @param leaderboard [{wallet, score}], already sorted/limited to the top N -- this
 ///   function doesn't re-rank or truncate, it only allocates.
 /// @param totalReward BigInt -- the milestone's total reward pool, in the reward token's
 ///   smallest unit (wei for ETH/most ERC20s).
@@ -15,9 +15,10 @@
 function allocateProportional(leaderboard, totalReward) {
   if (leaderboard.length === 0) return [];
 
-  // netBuyUsd is a float; scale to an integer weight for exact BigInt division. 1e6 gives
-  // six decimal places of precision on the USD figure, plenty for a proportional split.
-  const weights = leaderboard.map((e) => BigInt(Math.round(e.netBuyUsd * 1e6)));
+  // score is a float (a USD net-buy figure for SHO, an engagement-point sum for SSO); scale
+  // to an integer weight for exact BigInt division. 1e6 gives six decimal places of
+  // precision, plenty for a proportional split either way.
+  const weights = leaderboard.map((e) => BigInt(Math.round(e.score * 1e6)));
   const totalWeight = weights.reduce((a, b) => a + b, 0n);
   if (totalWeight === 0n) return [];
 
