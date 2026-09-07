@@ -17,7 +17,7 @@ const { SHO_CAMPAIGN_ABI } = require("./abis/sho");
 const db = require("./db");
 
 async function postPendingRoots(provider, keeperWallet) {
-  const pending = await db.publishedUnpostedSnapshots();
+  const pending = await db.unpostedSnapshots();
 
   for (const snapshot of pending) {
     const campaign = new ethers.Contract(snapshot.campaign_address, SHO_CAMPAIGN_ABI, keeperWallet);
@@ -32,12 +32,21 @@ async function postPendingRoots(provider, keeperWallet) {
       // path, not a no-op -- it only reverts once the challenge window has actually elapsed,
       // so re-running this while that window is still open would silently reset it for a
       // milestone nothing is wrong with. Backfill the bookkeeping instead of sending a
-      // transaction.
+      // transaction -- deliberately independent of whether this snapshot ever got an
+      // ipfs_cid, since a milestone can be legitimately reached on-chain regardless of
+      // whether its publish to IPFS ever succeeded.
       await db.upsertRootSubmission({ campaignAddress: snapshot.campaign_address, index: snapshot.index, status: "confirmed", txHash: null });
       await db.markSnapshotPosted(snapshot.campaign_address, snapshot.index);
       console.log(
         `[onchainPoster] ${snapshot.campaign_address} milestone ${snapshot.index}: already reached on-chain -- backfilled bookkeeping, no transaction sent`
       );
+      continue;
+    }
+
+    if (!snapshot.ipfs_cid) {
+      // Not reached yet, and not published yet either -- wait for snapshotPublisher.js
+      // rather than posting a root nobody can independently verify during the challenge
+      // window (the whole point of publishing first, KEEPER_SERVICE_DESIGN.md section 4.6).
       continue;
     }
 

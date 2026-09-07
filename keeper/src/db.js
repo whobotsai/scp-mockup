@@ -135,12 +135,16 @@ async function setSnapshotIpfsCid(campaignAddress, index, cid) {
   );
 }
 
-/// Snapshots the Snapshot Publisher has already pinned to IPFS but the On-chain Poster
-/// hasn't yet marked 'posted' -- postPendingRoots (onchainPoster.js) is what actually decides
-/// whether that means "send a transaction" or "already reached on-chain, just backfill the
-/// bookkeeping" (see that module's own comment on why it checks on-chain state before posting).
-async function publishedUnpostedSnapshots() {
-  const { rows } = await pool.query("SELECT * FROM snapshots WHERE ipfs_cid IS NOT NULL AND status != 'posted'");
+/// Every snapshot the On-chain Poster hasn't yet marked 'posted' -- deliberately not filtered
+/// by ipfs_cid. Whether a milestone is already reached() on-chain is independent of whether
+/// its snapshot ever got pinned to IPFS: gating this query on ipfs_cid meant a snapshot whose
+/// publish kept failing could never get its bookkeeping backfilled even after a human posted
+/// it by hand, so the missed-root alert (alerts.js) fired forever on an already-fine milestone
+/// -- confirmed live. postPendingRoots (onchainPoster.js) checks on-chain state per snapshot
+/// and only requires ipfs_cid before actually sending a transaction for one that truly isn't
+/// reached yet.
+async function unpostedSnapshots() {
+  const { rows } = await pool.query("SELECT * FROM snapshots WHERE status != 'posted'");
   return rows;
 }
 
@@ -201,7 +205,7 @@ module.exports = {
   insertSnapshot,
   snapshotsMissingIpfsCid,
   setSnapshotIpfsCid,
-  publishedUnpostedSnapshots,
+  unpostedSnapshots,
   markSnapshotPosted,
   getRootSubmission,
   upsertRootSubmission,
