@@ -271,11 +271,15 @@ window elapses, claim succeeds — with zero manual steps.
 > is set; and a token's `website`/`twitter`/`holders`/ATH mcap still show `—` for the same
 > reason `../api/` returns `null` for them (see its own README).
 >
-> **Not verified from this sandbox** (no path to a real chain/OAuth provider here, same
-> caveat as `../keeper/README.md` and `../registration-service/README.md`): an actual
-> `createCampaign()`/`claim()`/`registerHandle()` transaction signed and mined against the
-> live testnet contracts, and a completed X OAuth round-trip through the new `#/link-x` page.
-> Validated everything short of that: the full JSX compiles cleanly (`@babel/preset-react`,
+> **Update: the `registerHandle()` + X OAuth round-trip is now verified live**, from a
+> machine with normal network access (not this sandbox) -- a real X login, a real attestation,
+> and a real `registerHandle(...)` transaction mined against the live testnet Registry, with
+> `Registry.handleOf` reading the handle straight back on the deployed frontend's Profile page
+> afterward. `Registry.attestor()` needed rotating first, away from the deploy-time
+> placeholder (see `../registration-service/README.md`'s "The attestor key"). Still not
+> verified from this sandbox itself (no path to a real chain/OAuth provider here, same caveat
+> as `../keeper/README.md`): an actual `createCampaign()`/`claim()` transaction signed and
+> mined. Validated everything short of that: the full JSX compiles cleanly (`@babel/preset-react`,
 > matching the exact `babel-standalone` version the page loads), and a headless-browser pass
 > with a mocked wallet + mocked `../api/` responses exercised every route (Discover, campaign
 > detail with live milestone/leaderboard/claim-status rendering, the full 5-step create wizard

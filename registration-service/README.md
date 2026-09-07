@@ -26,10 +26,15 @@ migrations/001_init.sql  Postgres schema (one audit table)
   is line-for-line the same math, not a reimplementation that could have drifted.
 - **PKCE helpers**: unit-tested against RFC 7636's length bounds and a manually-computed
   SHA-256/base64url digest.
-- **The OAuth flow itself (`/auth/x/start` -> `/auth/x/callback`) has not been run against
-  X's real API from this environment** -- this sandbox has no network access to complete an
-  interactive OAuth consent flow, let alone reach X's API at all. It needs to be tried from a
-  machine with normal network access, with a real X Developer App configured (below).
+- **The OAuth flow itself (`/auth/x/start` -> `/auth/x/callback`) has been run end-to-end
+  against X's real API** -- verified live (from a machine with normal network access, not
+  this sandbox) with a real X Developer App: a real handle came back, the attestation
+  verified, and the wallet's own `registerHandle(...)` call -- submitted through
+  `../public/index.html`'s `#/link-x` page -- was mined successfully, with `Registry.handleOf`
+  reading the linked handle straight back afterward. `Registry.attestor()` had to be rotated
+  first (`setAttestor(...)`, as the section below describes) away from the deploy-time
+  placeholder to this service's actual signing key -- do that before expecting a fresh
+  attestation to verify.
 
 ## Setting up an X Developer App
 
