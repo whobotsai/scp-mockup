@@ -273,10 +273,13 @@ Two fast-path tools sidestep this when there's nothing meaningful to backfill:
 
 ```bash
 # Seed one already-known campaign-creation transaction directly (no block-range scan at all)
-npm run seed-known-campaign -- <txHash>
+npm run seed-known-campaign -- <txHash>          # SHO
+npm run seed-known-sso-campaign -- <txHash>      # SSO
 
 # Fast-forward any cursor straight to the current chain head
 npm run fast-forward-cursor -- campaign_indexer
+npm run fast-forward-cursor -- sso_campaign_indexer
+npm run fast-forward-cursor -- registration_indexer
 npm run fast-forward-cursor -- trades:<tokenAddress>
 ```
 

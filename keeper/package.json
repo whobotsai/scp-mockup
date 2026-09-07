@@ -6,6 +6,7 @@
   "scripts": {
     "migrate": "node scripts/migrate.js",
     "seed-known-campaign": "node scripts/seed-known-campaign.js",
+    "seed-known-sso-campaign": "node scripts/seed-known-sso-campaign.js",
     "register-token-pool": "node scripts/register-token-pool.js",
     "fast-forward-cursor": "node scripts/fast-forward-cursor.js",
     "post-milestone-root": "node scripts/post-milestone-root.js",
