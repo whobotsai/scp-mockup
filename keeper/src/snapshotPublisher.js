@@ -103,7 +103,11 @@ async function publishPendingSnapshots(intervalMs = DEFAULT_PUBLISH_INTERVAL_MS)
       await db.setSnapshotIpfsCid(snapshot.campaign_address, snapshot.index, cid);
       console.log(`[snapshotPublisher] ${snapshot.campaign_address} milestone ${snapshot.index}: published, cid=${cid}`);
     } catch (e) {
-      console.error(`[snapshotPublisher] ${snapshot.campaign_address} milestone ${snapshot.index}: publish failed:`, e.message);
+      // undici's fetch wraps the real underlying error (DNS failure, TLS issue, connection
+      // reset, ...) in a generic "fetch failed" TypeError with the actual cause on `.cause` --
+      // logging e.message alone (confirmed live) hides exactly the detail needed to diagnose
+      // a real network failure vs. a bad request.
+      console.error(`[snapshotPublisher] ${snapshot.campaign_address} milestone ${snapshot.index}: publish failed:`, e.message, e.cause || "");
     }
   }
 }
