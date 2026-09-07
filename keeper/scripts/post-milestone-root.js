@@ -1,7 +1,7 @@
-// Posts a milestone snapshot computed by src/milestoneEngine.js on-chain -- the manual half
-// of build-order step 2 (KEEPER_SERVICE_DESIGN.md section 8): the *scoring* (snapshot
-// computation) is automatic, the *posting* still isn't. Requires KEEPER_PRIVATE_KEY, since
-// SHOCampaign.postMilestoneRoot is onlyKeeper.
+// Posts a milestone snapshot computed by src/milestoneEngine.js on-chain by hand -- normally
+// src/onchainPoster.js does this automatically as part of build-order step 3, so this script
+// is now a manual override/backfill tool rather than the primary path. Requires
+// KEEPER_PRIVATE_KEY, since SHOCampaign.postMilestoneRoot is onlyKeeper.
 //
 // Usage: node scripts/post-milestone-root.js <campaignAddress> <milestoneIndex>
 "use strict";
@@ -35,6 +35,17 @@ async function main() {
   const provider = new ethers.JsonRpcProvider(rpcUrl);
   const keeper = new ethers.Wallet(keeperPrivateKey, provider);
   const campaign = new ethers.Contract(campaignAddress, SHO_CAMPAIGN_ABI, keeper);
+
+  const milestone = await campaign.getMilestone(index);
+  if (milestone.reached) {
+    console.error(
+      `Milestone ${index} is already reached on-chain -- posting again would hit the ` +
+        `*correction* path (SHOCampaign.sol's postMilestoneRoot), which only reverts once the ` +
+        `challenge window has elapsed, so this would silently reset that window if it's still open.`
+    );
+    console.error("Refusing to send a transaction. If this really needs correcting, do that deliberately, not via this script's default path.");
+    process.exit(1);
+  }
 
   console.log(`Posting milestone ${index} root for ${campaignAddress}...`);
   console.log(`  merkleRoot:   ${snapshot.merkle_root}`);

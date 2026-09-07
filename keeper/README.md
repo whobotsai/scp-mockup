@@ -1,15 +1,16 @@
-# Keeper Service — Stage 1, build-order steps 1-2
+# Keeper Service — Stage 1, build-order steps 1-3
 
-Implements the first two slices of [`../docs/KEEPER_SERVICE_DESIGN.md`](../docs/KEEPER_SERVICE_DESIGN.md)'s
+Implements the first three slices of [`../docs/KEEPER_SERVICE_DESIGN.md`](../docs/KEEPER_SERVICE_DESIGN.md)'s
 suggested build order (§8): Chain Indexer (campaign discovery + trade indexing), the Volume
-Aggregator, the Price/TWAP Oracle, and the Milestone Engine's crossing detection — exercised
-against the real testnet SHOFactory from
-[`../contracts/deployments/46630.json`](../contracts/deployments/46630.json). Root *posting*
-stays manual (step 2's own scope, see below) — everything upstream of that is automatic.
+Aggregator, the Price/TWAP Oracle, the Milestone Engine's crossing detection, the Snapshot
+Publisher, and the On-chain Poster — exercised against the real testnet SHOFactory from
+[`../contracts/deployments/46630.json`](../contracts/deployments/46630.json). Root posting is
+now automatic too (with one deliberate simplification, see below) — the whole SHO path from
+"a milestone crosses" to "the root is on-chain" now runs without a human in the loop.
 
 ```
 src/
-  db.js                 Postgres access — campaigns, sho_trades, token_pools, snapshots, cursors
+  db.js                 Postgres access — campaigns, sho_trades, token_pools, snapshots, root_submissions, cursors
   campaignIndexer.js    Watches SHOFactory's CampaignCreated, populates `campaigns`
   tradeIndexer.js       Per-campaign trade indexing, dispatches by venue to a trade source
   volumeAggregator.js   Net-buy volume per wallet (PRD §2.2) — pure function + DB wrapper
@@ -18,6 +19,9 @@ src/
   rewardAllocator.js    Proportional reward split for a milestone's leaderboard
   merkleTree.js         Direct port of contracts/test/helpers/merkle.js — see its own header
   milestoneEngine.js    Checks every unreached milestone against the TWAP mcap each tick
+  snapshotPublisher.js  Pins a computed snapshot to IPFS (Lighthouse.storage), see below
+  onchainPoster.js      Posts a published snapshot's root on-chain, see below
+  alerts.js             Missed-root alert — logs loudly if a crossing goes too long unposted
   tradeSources/
     types.js             The normalized TradeEvent shape every adapter produces
     uniswapV2.js          Testnet venue — validated against a real deployed pool, see below
@@ -31,10 +35,11 @@ migrations/
   003_multi_venue_pools.sql   Generalized 002 to carry either venue's config
   004_snapshots.sql           Milestone Engine's frozen leaderboard snapshots
   005_price_samples.sql       Price/TWAP Oracle's raw price samples
+  006_root_submissions.sql    On-chain Poster's proposed/confirmed/failed tracking table
 scripts/
   register-token-pool.js     One-off: tell the indexer where a token's real pool lives
   fast-forward-cursor.js     One-off: skip a cursor past a backfill gap that's too slow to catch up
-  post-milestone-root.js     Posts a computed snapshot on-chain — the manual half of step 2
+  post-milestone-root.js     Manual override/backfill — normally onchainPoster.js does this
   claim-milestone.js         Claims a wallet's share of an already-posted milestone reward
 ```
 
@@ -80,13 +85,28 @@ stays in the codebase, unused for now, ready for whenever mainnet is in scope.
   `twapPrice × live totalSupply()`. A crossing freezes a leaderboard snapshot
   (`volumeAggregator.js`), allocates the milestone's reward proportionally
   (`rewardAllocator.js`, exact BigInt math, no floating-point dust), builds the Merkle tree
-  (`merkleTree.js`), and stores it in `snapshots` — then prints the `post-milestone-root`
-  command to actually post it, which stays a manual step (see below). 27 unit tests across
-  the pure-logic pieces (TWAP weighting, proportional allocation, Merkle proof
-  self-consistency), all passing without needing live infrastructure. **Validated live**: the
-  tracked test campaign's TWAP market cap crossed its $100K milestone after a real 30-minute
-  keeper runtime, a snapshot was computed and stored, and `post-milestone-root.js` posted the
-  root on-chain successfully.
+  (`merkleTree.js`), and stores it in `snapshots`. 27 unit tests across the pure-logic pieces
+  (TWAP weighting, proportional allocation, Merkle proof self-consistency), all passing
+  without needing live infrastructure. **Validated live**: the tracked test campaign's TWAP
+  market cap crossed its $100K milestone after a real 30-minute keeper runtime and a snapshot
+  was computed and stored.
+- **Snapshot Publisher + On-chain Poster** (build-order step 3): `snapshotPublisher.js` pins
+  every computed snapshot's full leaderboard to IPFS via Lighthouse.storage (needs
+  `LIGHTHOUSE_API_KEY`, see below — skips publishing, logged not errored, without one) so
+  anyone can independently recompute the root during the challenge window; `onchainPoster.js`
+  then posts any published snapshot's root on-chain automatically, tracked in
+  `root_submissions` for the same idempotency guarantee `sho_trades`/`campaigns` already have
+  (a crashed run resumes from that table's state instead of re-proposing a duplicate
+  transaction). `alerts.js`'s missed-root check logs loudly if a crossing goes unposted past a
+  1-hour SLA. **Deliberate simplification**: this signs with a single `KEEPER_PRIVATE_KEY` EOA
+  instead of the design doc's 3-of-5 Gnosis Safe multi-sig — a real Safe needs 5 real signer
+  keys and its own deployment, out of scope for this solo dev/testnet pass. `root_submissions`
+  tracks proposed/confirmed exactly as the multi-sig flow would, so swapping in a real Safe
+  later changes *how* a root gets signed, not the tracking model around it — revisit before
+  any campaign with real funds goes live. `scripts/post-milestone-root.js` still exists as a
+  manual override/backfill, now with a safety check refusing to re-post an already-`reached`
+  milestone (which would otherwise hit the contract's *correction* path and silently reset an
+  open challenge window).
 
 **A real constraint, not a shortcut:** a token's TWAP is `null` (not "insufficient but
 computed anyway") until there's at least 30 real minutes of price-sample history for it —
@@ -154,19 +174,28 @@ npm run migrate            # applies every migrations/*.sql file
 npm start                  # polls for campaigns + trades + logs volume aggregator output
 ```
 
-`npm test` runs every pure-logic unit test (27 total, no `.env`/DB/RPC needed) — this is what's
+`npm test` runs every pure-logic unit test (29 total, no `.env`/DB/RPC needed) — this is what's
 actually verifiable without live infrastructure.
 
 To set up a full test loop yourself (token, pool, campaign, trade), see
 `../contracts/README.md`'s "Deploying a test token + pool" section. Once a milestone crosses
-(after the ~30-minute wait above), post it on-chain:
+(after the ~30-minute wait above), `npm start` now publishes the snapshot to IPFS and posts
+its root on-chain automatically, as long as `.env` has:
+
+- `KEEPER_PRIVATE_KEY` — the wallet SHOFactory's `keeper()` points at (see `.env.example`'s
+  comment; currently the Stage 0 deployer placeholder). Without it, publishing and the
+  missed-root alert still run, but posting is skipped (logged, not an error) — see
+  `index.js`'s own log line on startup.
+- `LIGHTHOUSE_API_KEY` — without it, publishing is skipped too (also logged, not an error),
+  and posting never happens since `onchainPoster.js` only posts snapshots that already have
+  an `ipfs_cid`.
+
+`scripts/post-milestone-root.js` still exists for a manual override or to backfill a snapshot
+computed before `KEEPER_PRIVATE_KEY`/`LIGHTHOUSE_API_KEY` were set:
 
 ```bash
 npm run post-milestone-root -- <campaignAddress> <milestoneIndex>
 ```
-
-This needs `KEEPER_PRIVATE_KEY` in `.env` — the wallet SHOFactory's `keeper()` points at (see
-`.env.example`'s comment; currently the Stage 0 deployer placeholder).
 
 Once the 24h challenge window from that post has actually elapsed, an eligible wallet claims
 its share directly from the same snapshot (real Merkle proof, not the Stage 0 test walkthrough's

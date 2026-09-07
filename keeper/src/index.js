@@ -1,7 +1,10 @@
 // Entry point: runs the Chain Indexer (campaign discovery + trade indexing), price sampling,
-// and the Milestone Engine on a polling loop. This is Stage 1 build-order steps 1 and 2
-// (KEEPER_SERVICE_DESIGN.md section 8) — root *posting* stays manual (step 2's own scope,
-// see scripts/post-milestone-root.js); everything upstream of that is now automatic.
+// the Milestone Engine, the Snapshot Publisher, the On-chain Poster, and the missed-root
+// alert on a polling loop. This is Stage 1 build-order steps 1-3 (KEEPER_SERVICE_DESIGN.md
+// section 8) — root posting is now automatic too (see src/onchainPoster.js for the one
+// deliberate simplification in that step: a single-signer EOA standing in for the design
+// doc's 3-of-5 Gnosis Safe). scripts/post-milestone-root.js still exists for a manual
+// override, but is no longer needed for the normal path.
 "use strict";
 require("dotenv").config();
 const { ethers } = require("ethers");
@@ -10,9 +13,12 @@ const { pollTradesForCampaign } = require("./tradeIndexer");
 const { netBuyVolumeForCampaign } = require("./volumeAggregator");
 const { samplePrice } = require("./priceSampler");
 const { checkMilestones } = require("./milestoneEngine");
+const { publishPendingSnapshots } = require("./snapshotPublisher");
+const { postPendingRoots } = require("./onchainPoster");
+const { checkMissedRootAlerts } = require("./alerts");
 const db = require("./db");
 
-async function tick(provider) {
+async function tick(provider, keeperWallet) {
   const factoryAddress = process.env.SHO_FACTORY_ADDRESS;
   const deployBlock = Number(process.env.SHO_FACTORY_DEPLOY_BLOCK || 0);
 
@@ -38,17 +44,39 @@ async function tick(provider) {
       await checkMilestones(provider, c);
     }
   }
+
+  // Build-order step 3: publish any newly computed snapshot to IPFS, post any published
+  // snapshot's root on-chain, then check whether anything crossed too long ago with still no
+  // confirmed root. Each stage is idempotent on its own DB state (section 6), so running all
+  // three every tick is safe even though most ticks find nothing pending in any of them.
+  await publishPendingSnapshots();
+  if (keeperWallet) {
+    await postPendingRoots(provider, keeperWallet);
+  }
+  await checkMissedRootAlerts();
 }
 
 async function main() {
   const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
   const pollIntervalMs = Number(process.env.POLL_INTERVAL_MS || 15000);
 
-  console.log(`Keeper (Stage 1, steps 1-2) starting. Polling every ${pollIntervalMs}ms.`);
+  // KEEPER_PRIVATE_KEY is now used by the main process itself, not just the manual scripts --
+  // build-order step 3 automates postMilestoneRoot, which needs a signer. Still optional here
+  // (rather than a hard exit) so the rest of the pipeline keeps running for anyone who hasn't
+  // set it up yet; onchainPoster.js simply doesn't run without it, same as a token with no
+  // registered pool skipping price sampling above.
+  const keeperWallet = process.env.KEEPER_PRIVATE_KEY
+    ? new ethers.Wallet(process.env.KEEPER_PRIVATE_KEY, provider)
+    : null;
+  if (!keeperWallet) {
+    console.log("[keeper] KEEPER_PRIVATE_KEY not set -- automatic root posting is disabled this run.");
+  }
+
+  console.log(`Keeper (Stage 1, steps 1-3) starting. Polling every ${pollIntervalMs}ms.`);
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
-      await tick(provider);
+      await tick(provider, keeperWallet);
     } catch (e) {
       console.error("[keeper] tick failed:", e);
     }

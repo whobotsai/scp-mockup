@@ -122,6 +122,69 @@ async function insertSnapshot(s) {
   );
 }
 
+async function snapshotsMissingIpfsCid() {
+  const { rows } = await pool.query("SELECT * FROM snapshots WHERE ipfs_cid IS NULL");
+  return rows;
+}
+
+async function setSnapshotIpfsCid(campaignAddress, index, cid) {
+  await pool.query(
+    `UPDATE snapshots SET ipfs_cid = $3, status = 'published'
+     WHERE campaign_address = $1 AND "index" = $2`,
+    [campaignAddress, index, cid]
+  );
+}
+
+/// Snapshots the Snapshot Publisher has already pinned to IPFS but the On-chain Poster
+/// hasn't yet marked 'posted' -- postPendingRoots (onchainPoster.js) is what actually decides
+/// whether that means "send a transaction" or "already reached on-chain, just backfill the
+/// bookkeeping" (see that module's own comment on why it checks on-chain state before posting).
+async function publishedUnpostedSnapshots() {
+  const { rows } = await pool.query("SELECT * FROM snapshots WHERE ipfs_cid IS NOT NULL AND status != 'posted'");
+  return rows;
+}
+
+async function markSnapshotPosted(campaignAddress, index) {
+  await pool.query(
+    `UPDATE snapshots SET status = 'posted' WHERE campaign_address = $1 AND "index" = $2`,
+    [campaignAddress, index]
+  );
+}
+
+async function getRootSubmission(campaignAddress, index) {
+  const { rows } = await pool.query(
+    'SELECT * FROM root_submissions WHERE campaign_address = $1 AND "index" = $2',
+    [campaignAddress, index]
+  );
+  return rows[0] || null;
+}
+
+async function upsertRootSubmission(s) {
+  await pool.query(
+    `INSERT INTO root_submissions (campaign_address, "index", status, tx_hash, confirmed_at)
+     VALUES ($1, $2, $3, $4, CASE WHEN $3 = 'confirmed' THEN now() ELSE NULL END)
+     ON CONFLICT (campaign_address, "index") DO UPDATE SET
+       status = EXCLUDED.status,
+       tx_hash = COALESCE(EXCLUDED.tx_hash, root_submissions.tx_hash),
+       confirmed_at = CASE WHEN EXCLUDED.status = 'confirmed' THEN now() ELSE root_submissions.confirmed_at END`,
+    [s.campaignAddress, s.index, s.status, s.txHash ?? null]
+  );
+}
+
+/// Snapshots crossed at least slaMs ago with no root_submissions row that ever reached
+/// 'confirmed' -- the missed-root alert (KEEPER_SERVICE_DESIGN.md section 4.8), the single
+/// most safety-critical check in the system: it's what stands between "keeper working" and
+/// "funds silently unclaimable because nobody posted a root."
+async function overdueUnconfirmedSnapshots(slaMs) {
+  const { rows } = await pool.query(
+    `SELECT s.* FROM snapshots s
+     LEFT JOIN root_submissions r ON r.campaign_address = s.campaign_address AND r."index" = s."index" AND r.status = 'confirmed'
+     WHERE r.campaign_address IS NULL AND s.computed_at < $1`,
+    [new Date(Date.now() - slaMs)]
+  );
+  return rows;
+}
+
 module.exports = {
   pool,
   getCursor,
@@ -136,4 +199,11 @@ module.exports = {
   priceSamplesSince,
   getSnapshot,
   insertSnapshot,
+  snapshotsMissingIpfsCid,
+  setSnapshotIpfsCid,
+  publishedUnpostedSnapshots,
+  markSnapshotPosted,
+  getRootSubmission,
+  upsertRootSubmission,
+  overdueUnconfirmedSnapshots,
 };

@@ -144,6 +144,27 @@ manually walked through milestone-reached / claim by hand (no automated keeper y
 > stored, and `post-milestone-root.js` posted the root on-chain successfully — the 24h
 > challenge window is now running for that milestone. Confirms the full automatic-scoring
 > half of this step against real on-chain data, not just the offline unit tests.
+>
+> **Build-order step 3 built:** the Snapshot Publisher (`snapshotPublisher.js`, pins a
+> computed snapshot's full leaderboard to IPFS via Lighthouse.storage — this design doc's own
+> resolved provider choice) and the On-chain Poster (`onchainPoster.js`, posts a published
+> snapshot's root automatically, tracked in a new `root_submissions` table for the same
+> crash-safe idempotency the rest of this pipeline already has) now close the loop — root
+> posting is no longer a manual step for the normal path. The missed-root alert (`alerts.js`,
+> §4.8's single most safety-critical check) logs loudly if a crossing goes unposted past a
+> 1-hour SLA. **Deliberate simplification**: signs with a single `KEEPER_PRIVATE_KEY` EOA
+> instead of the design doc's 3-of-5 Gnosis Safe multi-sig — a real Safe needs 5 real signer
+> keys and its own deployment, out of scope for this solo dev/testnet validation pass; PRD
+> §3.2 names that multi-sig as the MVP's single trusted component specifically because of the
+> human-approval step this simplification skips, so this must be revisited before any
+> campaign with real funds goes live. A real correctness issue was caught and fixed while
+> building this: naively re-posting an already-`reached` milestone (e.g. one a human already
+> posted by hand) hits the contract's *correction* path, not a no-op, and would silently reset
+> an open challenge window — both the automatic poster and the manual script now check
+> on-chain `reached` state first. 29 unit tests total. **Not yet exercised against a real IPFS
+> upload or a fresh automatic post** — no `LIGHTHOUSE_API_KEY` was available while building
+> this, and the one milestone crossed so far on testnet was already posted manually before
+> this pipeline existed; both need a real run to fully validate.
 
 - Chain indexer against the testnet deployment: subscribe to the campaigning token's Pons
   bonding-curve contract and (post-graduation) its Uniswap V4 pool (PRD §3.2).
