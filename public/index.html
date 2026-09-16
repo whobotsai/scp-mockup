@@ -958,6 +958,7 @@ const IcoGlobe       = p => <Ico {...p} d={<><circle cx="11" cy="11" r="7.5"/><p
 const IcoUsers       = p => <Ico {...p} d={<><circle cx="8" cy="8.5" r="2.8"/><path d="M2.8 18c.6-3 2.6-4.8 5.2-4.8s4.6 1.8 5.2 4.8"/><circle cx="15.5" cy="8" r="2.2"/><path d="M14.5 13.4c2.1.3 3.6 1.9 4.1 4.3"/></>}/>;
 const IcoPlus       = p => <Ico {...p} d={<path d="M11 4.5v13M4.5 11h13"/>}/>;
 const IcoLogout     = p => <Ico {...p} d={<><path d="M9 4H5.5A1.5 1.5 0 0 0 4 5.5v11A1.5 1.5 0 0 0 5.5 18H9"/><path d="M13.5 14.5 18 11l-4.5-3.5M18 11H9"/></>}/>;
+const IcoShare      = p => <Ico {...p} d={<><circle cx="16" cy="6" r="2.2"/><circle cx="6" cy="11" r="2.2"/><circle cx="16" cy="16" r="2.2"/><path d="M8.1 9.8l5.8-2.9M8.1 12.2l5.8 2.9"/></>}/>;
 
 function MsIcon({status}){
   if(status==='claimed'||status==='claimable') return <IcoCheckCirc size={15}/>;
@@ -1288,6 +1289,341 @@ function Discover({kind, go}){
   );
 }
 
+/* ===================== SHARE CARDS (gamification / social loop) ===================== */
+// Renders a shareable 1080x1080 PNG summarizing a campaign (for its creator to post right
+// after launch) or a wallet's live standing in it (for a trader/shiller who joined) -- this is
+// an engagement layer on top of the spec, not something PRD.md/BACKEND_ROADMAP.md calls for.
+// Drawn with plain Canvas 2D rather than a DOM-to-image trick (html2canvas/dom-to-image, or an
+// SVG <foreignObject> rasterized via drawImage) specifically so nothing here ever calls
+// drawImage() on cross-origin content -- that is the one thing that taints a canvas and blocks
+// toBlob()/toDataURL() afterward. fillText() with the Google Fonts this page already loads
+// (see the @import a few hundred lines up) does not taint a canvas; only drawImage() of
+// unauthorized cross-origin image data does, and this module never calls it.
+//
+// No server-side OG-image endpoint (a /campaigns/:address/card.png route unfurling nicely when
+// the campaign link is pasted into X/Telegram/Discord) exists yet -- this SPA's meta tags are
+// client-rendered, so link-unfurl bots wouldn't see them anyway without a small edge/middleware
+// piece in front of Firebase Hosting. Shipping the simpler path first: the Share button attaches
+// the rendered PNG directly (Web Share API) or downloads it for manual attach, with the
+// campaign link carried in the post's own text instead of embedded in the image or relying on
+// unfurl. Revisit the server-rendered route if/when unfurl previews are worth the extra infra.
+
+function crRoundRect(ctx, x, y, w, h, r){
+  if(ctx.roundRect){ ctx.beginPath(); ctx.roundRect(x, y, w, h, r); return; }
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.arcTo(x+w, y, x+w, y+h, r);
+  ctx.arcTo(x+w, y+h, x, y+h, r);
+  ctx.arcTo(x, y+h, x, y, r);
+  ctx.arcTo(x, y, x+w, y, r);
+  ctx.closePath();
+}
+
+// Decorative candlestick + Bollinger-band watermark, drawn once at a fixed shape and reused
+// across every card (colored per campaign type) -- pure texture, not real chart data.
+function drawChartBg(ctx, x, y, w, h, upColor){
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(w/900, h/260);
+  ctx.globalAlpha = 0.15;
+  const mid = [[20,208],[90,202],[120,190],[180,190],[240,190],[260,165],[320,165],[380,165],[400,145],[460,145],[520,145],[540,122],[600,122],[660,122],[680,100],[740,100],[780,100],[800,82],[860,80]];
+  const drawBand = (dy, dashed) => {
+    ctx.beginPath();
+    mid.forEach(([px,py], i)=>{ i===0 ? ctx.moveTo(px, py+dy) : ctx.lineTo(px, py+dy); });
+    ctx.strokeStyle = upColor; ctx.lineWidth = 2;
+    ctx.setLineDash(dashed ? [7,7] : []);
+    ctx.stroke();
+  };
+  drawBand(0, false);
+  drawBand(-30, true);
+  drawBand(30, true);
+  ctx.setLineDash([]);
+  const candles = [
+    [40,200,215,192,222,1],[103,190,205,182,212,1],[166,195,210,188,216,0],
+    [229,175,195,168,202,1],[292,160,178,152,185,1],[355,168,182,160,190,0],
+    [418,145,165,138,172,1],[481,130,150,122,158,1],[544,138,155,130,162,0],
+    [607,110,132,102,140,1],[670,95,115,88,122,1],[733,100,118,92,126,0],
+    [796,75,98,68,105,1],
+  ];
+  for(const [cx,top,bottom,wt,wb,up] of candles){
+    ctx.fillStyle = up ? upColor : '#71805A';
+    ctx.strokeStyle = up ? upColor : '#71805A';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(cx+11, wt); ctx.lineTo(cx+11, wb); ctx.stroke();
+    ctx.fillRect(cx, top, 22, bottom-top);
+  }
+  ctx.restore();
+}
+
+// data shape: { accent, badgeBg, badgeText, badgeLabel, mutedBorder, statusRight:{type,text},
+// eyebrow, keywordChip, hero:{type:'amount',amount,denom}|{type:'rank',value,ofText},
+// chips:[{label,value,accent}], railLabels:[a,b,c], footerLine1, footerUrl }
+async function drawShareCard(canvas, d){
+  await Promise.all([
+    document.fonts.load("800 110px 'Big Shoulders'"),
+    document.fonts.load("700 40px 'Big Shoulders'"),
+    document.fonts.load("700 17px 'Big Shoulders'"),
+    document.fonts.load("500 16px 'IBM Plex Mono'"),
+    document.fonts.load("400 16px 'IBM Plex Sans'"),
+  ]).catch(()=>{});
+
+  const W = 1080, H = 1080, PAD = 64;
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#111409'; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(198,242,62,0.05)'; ctx.lineWidth = 1;
+  for(let x=0; x<=W; x+=64){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for(let y=0; y<=H; y+=64){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+
+  // topbar: wordmark left, status + type badge right
+  ctx.save();
+  ctx.translate(PAD+6, PAD+9); ctx.rotate(Math.PI/4);
+  ctx.fillStyle = d.accent; ctx.fillRect(-6, -6, 12, 12);
+  ctx.restore();
+  ctx.fillStyle = '#A3B383'; ctx.font = "700 17px 'Big Shoulders'";
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  ctx.fillText('STRONG COMMITMENT PROTOCOL', PAD+22, PAD+9);
+
+  let rx = W - PAD;
+  ctx.font = "700 15px 'Big Shoulders'";
+  const badgeW = ctx.measureText(d.badgeLabel).width + 36;
+  crRoundRect(ctx, rx-badgeW, PAD-8, badgeW, 34, 17);
+  ctx.fillStyle = d.badgeBg; ctx.fill();
+  ctx.fillStyle = d.badgeText; ctx.textAlign = 'center';
+  ctx.fillText(d.badgeLabel, rx-badgeW/2, PAD+9);
+  rx -= badgeW + 14;
+
+  ctx.font = "500 13px 'IBM Plex Mono'";
+  const statusText = d.statusRight.text.toUpperCase();
+  const statusW = ctx.measureText(statusText).width;
+  if(d.statusRight.type === 'dot'){
+    ctx.beginPath(); ctx.arc(rx-statusW-13, PAD+9, 3.5, 0, Math.PI*2); ctx.fillStyle = d.accent; ctx.fill();
+  }
+  ctx.fillStyle = '#71805A'; ctx.textAlign = 'right';
+  ctx.fillText(statusText, rx, PAD+9);
+
+  // hero
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  const y = PAD + 126;
+  if(d.eyebrow){
+    ctx.fillStyle = '#71805A'; ctx.font = "500 16px 'IBM Plex Mono'";
+    const eyebrowText = d.eyebrow.toUpperCase();
+    ctx.fillText(eyebrowText, PAD, y);
+    if(d.keywordChip){
+      const ew = ctx.measureText(eyebrowText).width;
+      const kx = PAD+ew+16, kw = ctx.measureText(d.keywordChip).width+26;
+      crRoundRect(ctx, kx, y-20, kw, 28, 6);
+      ctx.fillStyle = d.badgeBg; ctx.fill();
+      ctx.fillStyle = d.accent; ctx.font = "500 14px 'IBM Plex Mono'";
+      ctx.fillText(d.keywordChip, kx+13, y-1);
+    }
+  }
+  let chipsTop;
+  if(d.hero.type === 'amount'){
+    ctx.fillStyle = '#F1F6DE'; ctx.font = "800 110px 'Big Shoulders'";
+    ctx.fillText(d.hero.amount, PAD, y+130);
+    ctx.fillStyle = d.accent; ctx.font = "700 40px 'Big Shoulders'";
+    ctx.fillText(d.hero.denom, PAD, y+182);
+    chipsTop = y + 236;
+  } else {
+    ctx.fillStyle = '#A3B383'; ctx.font = "700 30px 'Big Shoulders'";
+    ctx.fillText('RANK', PAD, y+40);
+    const rw = ctx.measureText('RANK').width;
+    ctx.fillStyle = d.accent; ctx.font = "800 148px 'Big Shoulders'";
+    ctx.fillText(d.hero.value, PAD+rw+26, y+118);
+    ctx.fillStyle = '#71805A'; ctx.font = "500 16px 'IBM Plex Mono'";
+    ctx.fillText(d.hero.ofText, PAD, y+160);
+    chipsTop = y + 210;
+  }
+
+  // chips
+  const gap = 14, chipW = (W-PAD*2-gap*2)/3, chipH = 84;
+  d.chips.forEach((chip, i) => {
+    const cx = PAD + i*(chipW+gap);
+    crRoundRect(ctx, cx, chipsTop, chipW, chipH, 12);
+    ctx.fillStyle = '#181D12'; ctx.fill();
+    ctx.strokeStyle = '#232C13'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = '#71805A'; ctx.font = "500 12px 'IBM Plex Mono'";
+    ctx.fillText(chip.label.toUpperCase(), cx+22, chipsTop+30);
+    ctx.fillStyle = chip.accent ? d.accent : '#F1F6DE';
+    ctx.font = "700 22px 'Big Shoulders'";
+    ctx.fillText(chip.value, cx+22, chipsTop+62);
+  });
+
+  drawChartBg(ctx, PAD, chipsTop+chipH+50, W-PAD*2, 260, d.accent);
+
+  // rail
+  const railY = H - PAD - 208, nodeR = 14;
+  const nodes = [
+    {x: PAD+nodeR, label: d.railLabels[0], done: true},
+    {x: PAD + (W-PAD*2)*0.5, label: d.railLabels[1], done: false},
+    {x: W-PAD-nodeR, label: d.railLabels[2], done: false},
+  ];
+  ctx.strokeStyle = '#232C13'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(nodes[0].x, railY); ctx.lineTo(nodes[2].x, railY); ctx.stroke();
+  nodes.forEach(n => {
+    ctx.beginPath(); ctx.arc(n.x, railY, nodeR, 0, Math.PI*2);
+    if(n.done){ ctx.fillStyle = d.accent; ctx.fill(); }
+    else { ctx.fillStyle = '#181D12'; ctx.fill(); ctx.strokeStyle = d.mutedBorder; ctx.lineWidth = 2; ctx.stroke(); }
+    ctx.fillStyle = n.done ? d.accent : '#71805A';
+    ctx.font = "500 11.5px 'IBM Plex Mono'"; ctx.textAlign = 'center';
+    ctx.fillText(n.label.toUpperCase(), n.x, railY+34);
+  });
+  ctx.textAlign = 'left';
+
+  // footer
+  const footerBorderY = H - PAD - 108;
+  ctx.strokeStyle = 'rgba(241,246,222,0.08)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(PAD, footerBorderY); ctx.lineTo(W-PAD, footerBorderY); ctx.stroke();
+  let fy = footerBorderY + 40;
+  if(d.footerLine1){
+    ctx.fillStyle = '#A3B383'; ctx.font = "400 16px 'IBM Plex Sans'";
+    ctx.fillText(d.footerLine1, PAD, fy);
+    fy += 34;
+  }
+  ctx.fillStyle = '#A3B383'; ctx.font = "500 16px 'IBM Plex Mono'";
+  ctx.fillText(d.footerUrl, PAD, fy);
+
+  return canvas;
+}
+
+// The campaign's own hash-routed page -- pasted into a post's text (never encoded into the
+// image itself; see this section's header for why there's no QR/URL baked into the PNG).
+function shareCardUrl(kind, campaignId){
+  return `${window.location.origin}${window.location.pathname}#/${kind}/${campaignId}`;
+}
+
+// Builds one card's full data + share caption from real campaign/standing state -- never
+// invented numbers, same "reconstructible from real data" posture the rest of this frontend
+// already follows for its non-mock fields.
+function buildShareCardData(kind, role, c, standing){
+  const isSho = kind === 'sho';
+  const accent = isSho ? '#C6F23E' : '#8CA6E0';
+  const badgeBg = isSho ? '#332A17' : '#1E273B';
+  const badgeText = isSho ? '#DDB05C' : '#8CA6E0';
+  const mutedBorder = isSho ? '#2C3620' : '#2A3348';
+  const url = shareCardUrl(kind, c.id);
+  const shortUrl = url.replace(/^https?:\/\//, '').replace(/^www\./, '');
+  const lockedAmount = `${fmtNum(fmtTokenAmount(c.locked))} ${c.denom}`;
+  const railLabels = ['Lock', isSho ? 'Milestone' : 'Epoch Close', 'Payout'];
+  const base = { accent, badgeBg, badgeText, mutedBorder, badgeLabel: isSho ? 'SHO' : 'SSO', railLabels, footerUrl: shortUrl };
+
+  if(role === 'creator'){
+    const chips = isSho
+      ? [
+          {label: 'Duration', value: c.duration},
+          {label: 'Leaderboard', value: `Top ${c.size} Traders`},
+          {label: 'Milestones', value: `${c.milestones.length} Tiers`},
+        ]
+      : [
+          {label: 'Duration', value: c.duration},
+          {label: 'Epoch', value: `Every ${c.epochLen}`},
+          {label: 'Winners', value: `Top ${c.size} / Epoch`},
+        ];
+    return {
+      ...base,
+      statusRight: {type: 'dot', text: 'Campaign live'},
+      eyebrow: `${c.token} · reward pool locked`,
+      keywordChip: isSho ? null : c.keyword,
+      hero: {type: 'amount', amount: fmtNum(fmtTokenAmount(c.locked)), denom: c.denom},
+      chips,
+      footerLine1: null,
+      caption: `${c.token} ${isSho ? 'SHO' : 'SSO'} campaign is live — ${lockedAmount} locked for the community. ${url}`,
+      url,
+    };
+  }
+
+  const rank = standing ? `#${standing.rank}` : '—';
+  const chips = isSho
+    ? [
+        {label: 'My Net-Buy Vol', value: standing ? fmtUSD(fmtTokenAmount(standing.score)) : '—', accent: true},
+        {label: 'Reward Pool', value: lockedAmount},
+        {label: 'Of', value: `Top ${c.size}`},
+      ]
+    : [
+        {label: 'My Score', value: standing ? `${fmtNum(standing.score)} Pts` : '—', accent: true},
+        {label: 'Reward Pool', value: lockedAmount},
+        {label: 'Of', value: `Top ${c.size}`},
+      ];
+  return {
+    ...base,
+    statusRight: {type: 'tag', text: isSho ? 'Wallet' : 'X Account'},
+    eyebrow: `${c.token} · ${isSho ? 'SHO' : 'SSO'} · my standing`,
+    keywordChip: isSho ? null : c.keyword,
+    hero: {type: 'rank', value: rank, ofText: `of Top ${c.size}`},
+    chips,
+    footerLine1: isSho ? `Trade ${c.token} to climb the leaderboard —` : `Post ${c.keyword} to join the leaderboard —`,
+    caption: isSho
+      ? `I'm ranked ${rank} on ${c.token}'s SHO leaderboard — competing for a share of the pool. ${url}`
+      : `I'm ranked ${rank} shilling ${c.keyword} on ${c.token}'s SSO leaderboard. ${url}`,
+    url,
+  };
+}
+
+function ShareCardModal({kind, role, campaign, standing, onClose}){
+  const canvasRef = useRef(null);
+  const [ready, setReady] = useState(false);
+  const data = useMemo(() => buildShareCardData(kind, role, campaign, standing), [kind, role, campaign, standing]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setReady(false);
+    if(canvasRef.current){
+      drawShareCard(canvasRef.current, data).then(() => { if(!cancelled) setReady(true); });
+    }
+    return () => { cancelled = true; };
+  }, [data]);
+
+  const fileName = `${campaign.token.replace(/[^a-z0-9]/gi, '')}-${kind}-${role}.png`;
+  const toBlob = () => new Promise(resolve => canvasRef.current.toBlob(resolve, 'image/png'));
+
+  const doDownload = async () => {
+    const blob = await toBlob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fileName;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  };
+
+  const doShare = async () => {
+    try {
+      const blob = await toBlob();
+      const file = new File([blob], fileName, {type: 'image/png'});
+      if(navigator.canShare && navigator.canShare({files: [file]})){
+        await navigator.share({files: [file], text: data.caption, title: 'Strong Commitment Protocol'});
+        return;
+      }
+    } catch(e){
+      if(e && e.name === 'AbortError') return; // user closed the native share sheet
+    }
+    // No Web Share API (most desktop browsers) -- open a pre-filled X post (link travels in
+    // the post text, per this feature's own "no QR, no unfurl backend yet" call) and download
+    // the PNG alongside so it can be attached to that post by hand.
+    window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(data.caption)}`, '_blank', 'noopener');
+    doDownload();
+  };
+
+  return (
+    <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:200, padding:20}} onClick={onClose}>
+      <div className="panel" style={{maxWidth:420, width:'100%'}} onClick={e => e.stopPropagation()}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14}}>
+          <div style={{fontWeight:600}}>Share {role === 'creator' ? 'campaign' : 'your standing'}</div>
+          <button onClick={onClose} style={{background:'none', border:'none', color:'var(--text-dim)', cursor:'pointer', padding:4}}><IcoX size={16}/></button>
+        </div>
+        <div style={{borderRadius:12, overflow:'hidden', border:'1px solid var(--border)', marginBottom:16, background:'#111409'}}>
+          <canvas ref={canvasRef} style={{width:'100%', display:'block', aspectRatio:'1 / 1'}}/>
+        </div>
+        <div style={{display:'flex', gap:10}}>
+          <Btn block icon={IcoShare} onClick={doShare} disabled={!ready}>Share</Btn>
+          <Btn block kind="outline" onClick={doDownload} disabled={!ready}>Download image</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ===================== SHO DETAIL ===================== */
 
 function SHODetail({id, go, user, notify}){
@@ -1298,6 +1634,7 @@ function SHODetail({id, go, user, notify}){
   const standings = useApiFetch(user.wallet ? `/wallets/${user.wallet}/standings` : null, [user.wallet, refreshTick]);
   const claims = useApiFetch(user.wallet ? `/wallets/${user.wallet}/claims` : null, [user.wallet, refreshTick]);
   const [claiming, setClaiming] = useState(null);
+  const [shareRole, setShareRole] = useState(null); // null | 'creator' | 'participant'
 
   if(loading) return <div className="page"><div className="wrap"><div className="empty-state"><h3>Loading campaign&hellip;</h3></div></div></div>;
   if(error || !c) return <EmptyRoute go={go}/>;
@@ -1342,7 +1679,12 @@ function SHODetail({id, go, user, notify}){
             <h1>{c.token} <span style={{color:'var(--text-faint)'}}>&middot; SHO</span></h1>
             <div className="camp-meta">Creator {shortAddr(c.creator)} &middot; {c.window} window &middot; Top {c.size} &middot; {c.duration} duration</div>
           </div>
-          <Tag kind="sho">{anyOpen ? 'Active' : 'Completed'}</Tag>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            {user.wallet && c.creator && user.wallet.toLowerCase()===c.creator.toLowerCase() && (
+              <Btn kind="outline" size="sm" icon={IcoShare} onClick={()=>setShareRole('creator')}>Share</Btn>
+            )}
+            <Tag kind="sho">{anyOpen ? 'Active' : 'Completed'}</Tag>
+          </div>
         </div>
 
         <div className="detail-grid">
@@ -1437,6 +1779,7 @@ function SHODetail({id, go, user, notify}){
                     <div className="kv"><span className="k">Wallet</span><span className="v">{shortAddr(user.wallet)}</span></div>
                     <div className="kv"><span className="k">Rank this window</span><span className="v">#{myStanding.rank}</span></div>
                     <div className="kv"><span className="k">Net-buy volume</span><span className="v">{fmtUSD(fmtTokenAmount(myStanding.score))}</span></div>
+                    <div style={{marginTop:12}}><Btn size="sm" kind="outline" icon={IcoShare} onClick={()=>setShareRole('participant')}>Share my standing</Btn></div>
                   </div>
                 ) : (
                   <div className="you-card">
@@ -1464,6 +1807,7 @@ function SHODetail({id, go, user, notify}){
           </div>
         </div>
       </div>
+      {shareRole && <ShareCardModal kind="sho" role={shareRole} campaign={c} standing={myStanding} onClose={()=>setShareRole(null)}/>}
     </div>
   );
 }
@@ -1478,6 +1822,7 @@ function SSODetail({id, go, user, notify}){
   const standings = useApiFetch(user.wallet ? `/wallets/${user.wallet}/standings` : null, [user.wallet, refreshTick]);
   const claims = useApiFetch(user.wallet ? `/wallets/${user.wallet}/claims` : null, [user.wallet, refreshTick]);
   const [claiming, setClaiming] = useState(null);
+  const [shareRole, setShareRole] = useState(null); // null | 'creator' | 'participant'
 
   if(loading) return <div className="page"><div className="wrap"><div className="empty-state"><h3>Loading campaign&hellip;</h3></div></div></div>;
   if(error || !c) return <EmptyRoute go={go}/>;
@@ -1521,7 +1866,12 @@ function SSODetail({id, go, user, notify}){
             <h1>{c.token} <span style={{color:'var(--text-faint)'}}>&middot; SSO</span></h1>
             <div className="camp-meta">Creator {shortAddr(c.creator)} &middot; keyword <b className="mono">{c.keyword}</b> &middot; epoch {c.epochLen}</div>
           </div>
-          <Tag kind="sso" icon={IcoCalendar}>{epochLabel}</Tag>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            {user.wallet && c.creator && user.wallet.toLowerCase()===c.creator.toLowerCase() && (
+              <Btn kind="outline" size="sm" icon={IcoShare} onClick={()=>setShareRole('creator')}>Share</Btn>
+            )}
+            <Tag kind="sso" icon={IcoCalendar}>{epochLabel}</Tag>
+          </div>
         </div>
 
         <div className="detail-grid">
@@ -1622,6 +1972,7 @@ function SSODetail({id, go, user, notify}){
                     <div className="kv"><span className="k">X account</span><span className="v">{user.xhandle}</span></div>
                     <div className="kv"><span className="k">Rank this epoch</span><span className="v">#{myStanding.rank}</span></div>
                     <div className="kv"><span className="k">Engagement score</span><span className="v">{fmtNum(myStanding.score)}</span></div>
+                    <div style={{marginTop:12}}><Btn size="sm" kind="outline" icon={IcoShare} onClick={()=>setShareRole('participant')}>Share my standing</Btn></div>
                   </div>
                 ) : (
                   <div className="you-card">
@@ -1649,6 +2000,7 @@ function SSODetail({id, go, user, notify}){
           </div>
         </div>
       </div>
+      {shareRole && <ShareCardModal kind="sso" role={shareRole} campaign={c} standing={myStanding} onClose={()=>setShareRole(null)}/>}
     </div>
   );
 }
