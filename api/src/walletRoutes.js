@@ -58,6 +58,7 @@ function router(provider) {
 
       res.json({ sho, sso });
     } catch (e) {
+      console.error(`[GET /wallets/${wallet}/standings]`, e);
       res.status(502).json({ error: "failed to load standings", detail: e.message });
     }
   });
@@ -110,6 +111,7 @@ function router(provider) {
 
       res.json({ claims });
     } catch (e) {
+      console.error(`[GET /wallets/${wallet}/claims]`, e);
       res.status(502).json({ error: "failed to load claims", detail: e.message });
     }
   });
@@ -137,6 +139,7 @@ function router(provider) {
       );
       res.json({ created });
     } catch (e) {
+      console.error(`[GET /wallets/${wallet}/created]`, e);
       res.status(502).json({ error: "failed to load created campaigns", detail: e.message });
     }
   });

@@ -50,6 +50,7 @@ function router() {
         merkleRoot: snapshot.merkle_root,
       });
     } catch (e) {
+      console.error(`[GET /campaigns/${campaignAddress}/claim-proof]`, e);
       res.status(502).json({ error: "failed to build claim proof", detail: e.message });
     }
   });

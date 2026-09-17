@@ -48,6 +48,7 @@ function router(provider) {
         holders: null,
       });
     } catch (e) {
+      console.error(`[GET /tokens/${req.params.address}]`, e);
       res.status(502).json({ error: "failed to load token", detail: e.message });
     }
   });

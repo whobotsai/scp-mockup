@@ -101,6 +101,7 @@ function router(provider) {
       const campaigns = await Promise.all(rows.map(loadCampaignSummary));
       res.json({ campaigns });
     } catch (e) {
+      console.error("[GET /sho/campaigns]", e);
       res.status(502).json({ error: "failed to load SHO campaigns", detail: e.message });
     }
   });
@@ -113,6 +114,7 @@ function router(provider) {
       const leaderboard = await db.shoLeaderboard(row.campaign_address, new Date(Date.now() - Number(row.window_seconds) * 1000), 10);
       res.json({ ...summary, topLeaderboard: leaderboard });
     } catch (e) {
+      console.error(`[GET /sho/campaigns/${req.params.address}]`, e);
       res.status(502).json({ error: "failed to load campaign", detail: e.message });
     }
   });
@@ -125,6 +127,7 @@ function router(provider) {
       const leaderboard = await db.shoLeaderboard(row.campaign_address, new Date(Date.now() - Number(row.window_seconds) * 1000), limit);
       res.json({ leaderboard: leaderboard.map((e, i) => ({ rank: i + 1, ...e })) });
     } catch (e) {
+      console.error(`[GET /sho/campaigns/${req.params.address}/leaderboard]`, e);
       res.status(502).json({ error: "failed to load leaderboard", detail: e.message });
     }
   });

@@ -86,6 +86,7 @@ function router(provider) {
       const campaigns = await Promise.all(rows.map(loadCampaignSummary));
       res.json({ campaigns });
     } catch (e) {
+      console.error("[GET /sso/campaigns]", e);
       res.status(502).json({ error: "failed to load SSO campaigns", detail: e.message });
     }
   });
@@ -99,6 +100,7 @@ function router(provider) {
         summary.currentEpochIndex !== null ? await db.ssoLeaderboard(row.campaign_address, summary.currentEpochIndex, 10) : [];
       res.json({ ...summary, topLeaderboard: leaderboard });
     } catch (e) {
+      console.error(`[GET /sso/campaigns/${req.params.address}]`, e);
       res.status(502).json({ error: "failed to load campaign", detail: e.message });
     }
   });
@@ -115,6 +117,7 @@ function router(provider) {
       const leaderboard = await db.ssoLeaderboard(row.campaign_address, epochIndex, limit);
       res.json({ leaderboard: leaderboard.map((e, i) => ({ rank: i + 1, ...e })) });
     } catch (e) {
+      console.error(`[GET /sso/campaigns/${req.params.address}/leaderboard]`, e);
       res.status(502).json({ error: "failed to load leaderboard", detail: e.message });
     }
   });
