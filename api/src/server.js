@@ -13,7 +13,23 @@ const tokenRoutes = require("./tokenRoutes");
 const walletRoutes = require("./walletRoutes");
 const claimRoutes = require("./claimRoutes");
 
+// Confirmed live: with RPC_URL unset, buildProvider() still succeeds (ethers.FetchRequest
+// happily accepts an empty string) and the process starts up looking fine -- every route then
+// fails on its first contract read with ethers' own cryptic "unsupported protocol
+// (info={"protocol":""}...)" error, which says nothing about RPC_URL at all. Same
+// requireEnv-at-startup pattern ../registration-service/src/server.js already uses, so this
+// fails loud and immediately instead of quietly shipping a broken deployment.
+function requireEnv(name) {
+  const value = process.env[name];
+  if (!value) {
+    console.error(`Missing required env var: ${name} (see .env.example)`);
+    process.exit(1);
+  }
+  return value;
+}
+
 function main() {
+  requireEnv("RPC_URL");
   const provider = buildProvider();
   const app = express();
   app.use(cors());
