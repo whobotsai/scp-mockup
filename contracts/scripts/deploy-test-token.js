@@ -24,8 +24,8 @@ async function main() {
   const provider = new ethers.JsonRpcProvider(rpcUrl);
   const deployer = new ethers.Wallet(privateKey, provider);
 
-  const name = process.argv[2] || "SCP Test Token";
-  const symbol = process.argv[3] || "SCPT";
+  const name = process.argv[2] || "Diamond Hand Test Token";
+  const symbol = process.argv[3] || "DHT";
   const initialSupply = ethers.parseUnits(process.argv[4] || "1000000", 18);
 
   const artifact = loadArtifact("MockERC20");

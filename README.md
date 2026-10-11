@@ -1,7 +1,7 @@
-# Strong Commitment Protocol — Mockup
+# Diamond Hand Protocol — Mockup
 
-An interactive frontend prototype and product documentation for **Strong Commitment
-Protocol (SCP)**: a mechanism that turns tokens a creator would otherwise burn or
+An interactive frontend prototype and product documentation for **Diamond Hand
+Protocol**: a mechanism that turns tokens a creator would otherwise burn or
 vest-lock into a reward pool that pays out contingently on growth, with the same
 permanent-loss downside as a burn if targets are missed.
 
@@ -224,6 +224,10 @@ firebase deploy --only hosting
 That gives a live URL at `https://<project-id>.web.app`. To use a custom
 domain: Firebase Console → Hosting → **Add custom domain**, then follow the DNS
 verification steps (SSL is provisioned automatically).
+
+**Planned domain:** `diamondhand.family`, once purchased. Until then the live
+preview stays at `https://commitment-protocol.web.app` (the current Firebase
+project, still bound in `.firebaserc`) — no hosting config changes here yet.
 
 Routing in the app is client-side (URL hash, e.g. `#/sho`), so a single
 `index.html` serves every route — no server-side rewrites are needed.
