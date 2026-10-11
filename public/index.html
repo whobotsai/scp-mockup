@@ -514,7 +514,11 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px;}
 
 @media (max-width: 880px){
   .wrap{padding:0 22px;}
+  .topnav-inner{flex-wrap:wrap;row-gap:10px;}
+  .nav-right{flex-wrap:wrap;justify-content:flex-end;}
   .hero-grid{grid-template-columns:1fr;}
+  .hero-grid > *{min-width:0;}
+  .rail-wrap{display:none;}
   .hero h1{font-size:40px;}
   .detail-grid{grid-template-columns:1fr;}
   .wizard{grid-template-columns:1fr;}
