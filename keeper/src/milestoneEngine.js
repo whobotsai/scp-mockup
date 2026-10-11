@@ -3,10 +3,11 @@
 // have been claimed first -- so every unreached tier is checked every tick against the
 // current TWAP mcap, not just "the next one in order."
 //
-// Posting the resulting root on-chain stays a manual step here (build-order step 2's own
-// scope, KEEPER_SERVICE_DESIGN.md section 8: "proves the scoring is right before automating
-// the posting") -- this module computes and stores the snapshot, then prints the exact
-// postMilestoneRoot call (and the scripts/post-milestone-root.js command) to run by hand.
+// Posting the resulting root on-chain is onchainPoster.js's job (build-order step 3, already
+// shared between both campaign types) -- this module only computes and stores the snapshot.
+// The printed postMilestoneRoot/scripts/post-milestone-root.js command below is a manual
+// override/backfill path, not the normal route -- onchainPoster.js picks up any unposted
+// snapshot on its own next tick.
 "use strict";
 const { ethers } = require("ethers");
 const { SHO_CAMPAIGN_ABI, MILESTONE_USD_THRESHOLDS } = require("./abis/sho");
