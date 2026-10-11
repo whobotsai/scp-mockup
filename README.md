@@ -1,7 +1,7 @@
-# Diamond Hand Protocol — Mockup
+# Diamond Hand — Mockup
 
-An interactive frontend prototype and product documentation for **Diamond Hand
-Protocol**: a mechanism that turns tokens a creator would otherwise burn or
+An interactive frontend prototype and product documentation for **Diamond
+Hand**: a mechanism that turns tokens a creator would otherwise burn or
 vest-lock into a reward pool that pays out contingently on growth, with the same
 permanent-loss downside as a burn if targets are missed.
 

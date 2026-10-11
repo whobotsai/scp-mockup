@@ -1,6 +1,6 @@
 # Contracts — Stage 0
 
-Smart contracts for Diamond Hand Protocol, per the "Contracts" workstream in
+Smart contracts for Diamond Hand, per the "Contracts" workstream in
 [`../docs/BACKEND_ROADMAP.md`](../docs/BACKEND_ROADMAP.md) (Stage 0). Implements the
 architecture already specified in [`../docs/PRD.md`](../docs/PRD.md) §3–§4, §10, §12:
 

@@ -1,10 +1,10 @@
-# Diamond Hand Protocol — Product & Technical Specification
+# Diamond Hand — Product & Technical Specification
 
 **Status:** Draft v4 — full documentation (spec + guides + contract reference + FAQ) for both campaign types
 **Audience:** Engineering team, investors/partners, token creators, traders, and social supporters
 **Chain target:** Robinhood Chain (Arbitrum Orbit, chain ID 4663, EVM-equivalent) — integrates with the Pons.family launchpad (bonding-curve tokens that graduate to Uniswap V4) and, for Part B, the X/Twitter API
 
-**Diamond Hand Protocol** turns a cost every token creator already pays, burning or locking part of their bag, into a performance-based growth budget instead. Tokens go into a reward pool that only pays out for behavior that actually grows the token: no growth, no payout, and the pool stays locked forever, exactly as if it had been burned in the first place. It ships with two campaign types: **Strong Hold Offering (SHO)** pays active traders, and **Strong Shill Offering (SSO)** pays active social supporters. Neither issues a new token or dilutes existing holders: the reward pool is money creators were already writing off, simply redirected toward the outcome they wanted all along.
+**Diamond Hand** turns a cost every token creator already pays, burning or locking part of their bag, into a performance-based growth budget instead. Tokens go into a reward pool that only pays out for behavior that actually grows the token: no growth, no payout, and the pool stays locked forever, exactly as if it had been burned in the first place. It ships with two campaign types: **Strong Hold Offering (SHO)** pays active traders, and **Strong Shill Offering (SSO)** pays active social supporters. Neither issues a new token or dilutes existing holders: the reward pool is money creators were already writing off, simply redirected toward the outcome they wanted all along.
 
 **The business case**
 
@@ -16,7 +16,7 @@ Every token launched on Pons.family (currently driving roughly 80% of launchpad 
 
 - **The flywheel.** A shiller or trader registers once (linking wallet to X for SSO), then stays automatically eligible for every campaign after that. The more campaigns run, the larger the ready-to-participate base becomes, and the stickier the platform gets, rather than being a one-and-done tool per token.
 
-- **The moat.** No comparable primitive exists yet in the Pons.family/Robinhood Chain ecosystem. Where staking or liquidity-mining programs have to fund rewards from new emissions (dilutive, and requiring their own tokenomics), Diamond Hand Protocol pays out of something that was already going to be sacrificed, which makes it cheaper for a creator to run, easier to sell to a community ("this isn't an empty promise, it's a burn that can turn into a reward if we succeed"), and legally simpler, since the platform itself never issues a token.
+- **The moat.** No comparable primitive exists yet in the Pons.family/Robinhood Chain ecosystem. Where staking or liquidity-mining programs have to fund rewards from new emissions (dilutive, and requiring their own tokenomics), Diamond Hand pays out of something that was already going to be sacrificed, which makes it cheaper for a creator to run, easier to sell to a community ("this isn't an empty promise, it's a burn that can turn into a reward if we succeed"), and legally simpler, since the platform itself never issues a token.
 
 In short: it converts a defensive cost almost every token already pays into the one growth budget whose downside is guaranteed to be no worse than doing nothing at all.
 

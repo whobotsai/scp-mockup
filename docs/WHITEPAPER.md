@@ -1,4 +1,4 @@
-# Diamond Hand Protocol
+# Diamond Hand
 
 ### A Growth-Aligned Alternative to Token Burning and Locking on Bonding-Curve Launchpads
 
@@ -10,7 +10,7 @@
 
 ## Abstract
 
-Token launchpads built on bonding curves have converged on two supply-commitment primitives available to a token's deployer or large holders: burning (permanent, unconditional destruction of tokens) and vesting locks (temporary, unconditional withholding of tokens). We argue both are costly signals in the sense of Spence [1] — they are credible precisely because faking them is expensive — but neither is a *productive* signal: neither one is contingent on, or rewards, the behavior that actually determines whether a token survives past its launch window. We introduce the **Diamond Hand Protocol**, which preserves the costly-signal property of burning (an unsuccessful commitment is destroyed exactly as if it had been burned) while making a successful commitment pay out to the participants who produced the outcome. The protocol ships two campaign primitives: **Strong Hold Offering (SHO)**, which conditions payout on a token's market capitalization and rewards net-buying activity, and **Strong Shill Offering (SSO)**, which conditions payout on a fixed schedule and rewards measured social amplification. We give a formal specification of both mechanisms, describe the trust-minimized architecture used to compute off-chain data (trading activity, social engagement) and post it on-chain, analyze the incentive properties and residual attack surface of each mechanism, and disclose the trade-offs accepted in this version of the design.
+Token launchpads built on bonding curves have converged on two supply-commitment primitives available to a token's deployer or large holders: burning (permanent, unconditional destruction of tokens) and vesting locks (temporary, unconditional withholding of tokens). We argue both are costly signals in the sense of Spence [1] — they are credible precisely because faking them is expensive — but neither is a *productive* signal: neither one is contingent on, or rewards, the behavior that actually determines whether a token survives past its launch window. We introduce the **Diamond Hand**, which preserves the costly-signal property of burning (an unsuccessful commitment is destroyed exactly as if it had been burned) while making a successful commitment pay out to the participants who produced the outcome. The protocol ships two campaign primitives: **Strong Hold Offering (SHO)**, which conditions payout on a token's market capitalization and rewards net-buying activity, and **Strong Shill Offering (SSO)**, which conditions payout on a fixed schedule and rewards measured social amplification. We give a formal specification of both mechanisms, describe the trust-minimized architecture used to compute off-chain data (trading activity, social engagement) and post it on-chain, analyze the incentive properties and residual attack surface of each mechanism, and disclose the trade-offs accepted in this version of the design.
 
 ---
 
@@ -33,7 +33,7 @@ Neither primitive is *contingent*: neither one's cost is a function of whether t
 
 ### 1.3 Design goal
 
-The Diamond Hand Protocol is designed to satisfy three properties simultaneously:
+The Diamond Hand is designed to satisfy three properties simultaneously:
 
 1. **Signal credibility no worse than burning.** In the failure case, the outcome for the committing party must be identical to a burn: total, permanent, irrecoverable loss of the committed tokens. This preserves the costly-signal property — nothing about this mechanism can be gamed to make failure cheaper than a real burn would have been.
 2. **Contingent productivity.** In the success case, the committed tokens must be transferred to participants whose measurable behavior plausibly caused or accompanied that success, rather than reverting to the committing party or disappearing.
@@ -55,7 +55,7 @@ Liquidity mining and staking-rewards programs are the closest prior art to SHO/S
 
 ---
 
-## 3. The Diamond Hand Protocol: Formal Mechanism
+## 3. The Diamond Hand: Formal Mechanism
 
 ### 3.1 Notation
 
@@ -121,7 +121,7 @@ A Merkle proof establishes that a specific leaf (wallet, reward amount) is a mem
 
 ### 5.1 Why the terminal condition preserves costly-signal credibility
 
-Consider a rational actor deciding between burning $\Pi$ tokens and opening a Diamond Hand Protocol campaign with the same $\Pi$. Let $\pi$ be the actor's honest subjective probability that the token reaches at least one configured milestone/epoch payout condition. Burning yields a certain, fixed cost of $\Pi$ with no state-contingent payoff. A Diamond Hand Protocol campaign yields the identical cost $\Pi$ in the failure branch (probability $1-\pi$) and, in the success branch (probability $\pi$), transfers value to third parties whose actions plausibly increased $\pi$ itself — a pool the actor was, by construction, already willing to lose entirely. For any $\pi > 0$, opening a campaign weakly dominates burning from the actor's perspective, and strictly dominates it whenever the actor believes the reward structure itself raises $\pi$ (which is the mechanism's entire premise). Critically, this dominance argument does not weaken the signal an external observer reads from the failure branch: since the failure-branch outcome is bit-for-bit identical to a burn (funds are provably inaccessible to any party, including the actor, forever), an external observer cannot distinguish "this actor burned tokens" from "this actor opened a campaign that failed" — the signal's credibility is preserved exactly, while its expected productive value is strictly higher.
+Consider a rational actor deciding between burning $\Pi$ tokens and opening a Diamond Hand campaign with the same $\Pi$. Let $\pi$ be the actor's honest subjective probability that the token reaches at least one configured milestone/epoch payout condition. Burning yields a certain, fixed cost of $\Pi$ with no state-contingent payoff. A Diamond Hand campaign yields the identical cost $\Pi$ in the failure branch (probability $1-\pi$) and, in the success branch (probability $\pi$), transfers value to third parties whose actions plausibly increased $\pi$ itself — a pool the actor was, by construction, already willing to lose entirely. For any $\pi > 0$, opening a campaign weakly dominates burning from the actor's perspective, and strictly dominates it whenever the actor believes the reward structure itself raises $\pi$ (which is the mechanism's entire premise). Critically, this dominance argument does not weaken the signal an external observer reads from the failure branch: since the failure-branch outcome is bit-for-bit identical to a burn (funds are provably inaccessible to any party, including the actor, forever), an external observer cannot distinguish "this actor burned tokens" from "this actor opened a campaign that failed" — the signal's credibility is preserved exactly, while its expected productive value is strictly higher.
 
 ### 5.2 Wash-trading and engagement-farming resistance
 
@@ -170,7 +170,7 @@ This section summarizes, at a formal level, the risks documented in full detail 
 
 ## 9. Conclusion
 
-Burning and locking are the dominant costly signals available to token creators today, and both are, by construction, unproductive: their cost is paid regardless of outcome, and neither rewards the participant behavior that would make a favorable outcome more likely. The Diamond Hand Protocol shows that this need not be a trade-off — a mechanism can preserve a burn's exact failure-branch severity (and therefore its full signaling credibility) while converting the success branch from a wasted cost into a targeted, non-dilutive payment to the traders (SHO) or amplifiers (SSO) whose measurable behavior accompanied that success. The principal open engineering problem this version leaves unresolved is oracle trust: both mechanisms currently depend on a keeper multi-sig for off-chain computation, mitigated but not eliminated by a procedural challenge window. Closing that gap without sacrificing the mechanism's practicality is the primary objective of the protocol's next phase.
+Burning and locking are the dominant costly signals available to token creators today, and both are, by construction, unproductive: their cost is paid regardless of outcome, and neither rewards the participant behavior that would make a favorable outcome more likely. The Diamond Hand shows that this need not be a trade-off — a mechanism can preserve a burn's exact failure-branch severity (and therefore its full signaling credibility) while converting the success branch from a wasted cost into a targeted, non-dilutive payment to the traders (SHO) or amplifiers (SSO) whose measurable behavior accompanied that success. The principal open engineering problem this version leaves unresolved is oracle trust: both mechanisms currently depend on a keeper multi-sig for off-chain computation, mitigated but not eliminated by a procedural challenge window. Closing that gap without sacrificing the mechanism's practicality is the primary objective of the protocol's next phase.
 
 ---
 

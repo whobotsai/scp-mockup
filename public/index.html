@@ -13,7 +13,7 @@
   }catch(e){}
 })();
 </script>
-<title>Diamond Hand Protocol</title>
+<title>Diamond Hand</title>
 <style>
 /* ============ FONTS ============ */
 @import url('https://fonts.googleapis.com/css2?family=Big+Shoulders:wght@500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
@@ -1124,7 +1124,7 @@ function Landing({go}){
           <div>
             <span className="eyebrow">Turn Commitment Into Growth</span>
             <h1>Lock it forward,<br/>not just away.</h1>
-            <p className="lede">Diamond Hand Protocol is a performance-based growth platform that turns the tokens you were going to burn or lock into a reward pool that pays out when the token actually grows. Miss the target and it locks forever, exactly like a burn. <span className="hl">There is no scenario where this is riskier than doing nothing.</span></p>
+            <p className="lede">Diamond Hand is a performance-based growth platform that turns the tokens you were going to burn or lock into a reward pool that pays out when the token actually grows. Miss the target and it locks forever, exactly like a burn. <span className="hl">There is no scenario where this is riskier than doing nothing.</span></p>
             <div className="hero-ctas">
               <Btn icon={IcoTrendUp} onClick={()=>go('/sho')}>Explore SHO campaigns</Btn>
               <Btn kind="ghost" icon={IcoMegaphone} onClick={()=>go('/sso')}>Explore SSO campaigns</Btn>
@@ -1215,7 +1215,7 @@ function Landing({go}){
       </div>
 
       <div className="wrap footer">
-        <span style={{display:'inline-flex',alignItems:'center',gap:6}}><IcoLock size={12}/>Diamond Hand Protocol &middot; live on testnet contracts</span>
+        <span style={{display:'inline-flex',alignItems:'center',gap:6}}><IcoLock size={12}/>Diamond Hand &middot; live on testnet contracts</span>
         <span style={{display:'inline-flex',alignItems:'center',gap:6}}><IcoLayers size={12}/>{SCP_CONFIG.CHAIN_NAME} &middot; chain ID {SCP_CONFIG.CHAIN_ID}</span>
       </div>
     </div>
@@ -1255,7 +1255,7 @@ function Discover({kind, go}){
       <div className="wrap">
         <div className="page-head">
           <div>
-            <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand Protocol</button> / {isSHO?'SHO':'SSO'}</div>
+            <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand</button> / {isSHO?'SHO':'SSO'}</div>
             <h1>{isSHO?'Strong Hold Offering':'Strong Shill Offering'}</h1>
           </div>
           <Btn icon={IcoPlus} onClick={()=>go(`/${kind}/create`)}>New campaign</Btn>
@@ -1388,7 +1388,7 @@ async function drawShareCard(canvas, d){
   ctx.restore();
   ctx.fillStyle = '#A3B383'; ctx.font = "700 17px 'Big Shoulders'";
   ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
-  ctx.fillText('DIAMOND HAND PROTOCOL', PAD+22, PAD+9);
+  ctx.fillText('DIAMOND HAND', PAD+22, PAD+9);
 
   let rx = W - PAD;
   ctx.font = "700 15px 'Big Shoulders'";
@@ -1597,7 +1597,7 @@ function ShareCardModal({kind, role, campaign, standing, onClose}){
       const blob = await toBlob();
       const file = new File([blob], fileName, {type: 'image/png'});
       if(navigator.canShare && navigator.canShare({files: [file]})){
-        await navigator.share({files: [file], text: data.caption, title: 'Diamond Hand Protocol'});
+        await navigator.share({files: [file], text: data.caption, title: 'Diamond Hand'});
         return;
       }
     } catch(e){
@@ -1678,7 +1678,7 @@ function SHODetail({id, go, user, notify}){
   return (
     <div className="page">
       <div className="wrap">
-        <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand Protocol</button> / <button onClick={()=>go('/sho')}>SHO</button> / {c.token}</div>
+        <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand</button> / <button onClick={()=>go('/sho')}>SHO</button> / {c.token}</div>
         <div className="page-head">
           <div>
             <h1>{c.token} <span style={{color:'var(--text-faint)'}}>&middot; SHO</span></h1>
@@ -1865,7 +1865,7 @@ function SSODetail({id, go, user, notify}){
   return (
     <div className="page">
       <div className="wrap">
-        <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand Protocol</button> / <button onClick={()=>go('/sso')}>SSO</button> / {c.token}</div>
+        <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand</button> / <button onClick={()=>go('/sso')}>SSO</button> / {c.token}</div>
         <div className="page-head">
           <div>
             <h1>{c.token} <span style={{color:'var(--text-faint)'}}>&middot; SSO</span></h1>
@@ -2063,7 +2063,7 @@ function CreateWizard({kind, go, user, notify}){
     return (
       <div className="page">
         <div className="wrap" style={{maxWidth:520}}>
-          <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand Protocol</button> / <button onClick={()=>go(`/${kind}`)}>{isSHO?'SHO':'SSO'}</button> / New</div>
+          <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand</button> / <button onClick={()=>go(`/${kind}`)}>{isSHO?'SHO':'SSO'}</button> / New</div>
           <div className="empty-state">
             <h3>Connect a wallet to create a campaign</h3>
             <p>The connected wallet becomes the on-chain creator of record and locks the reward pool, so it has to be set before you can configure a campaign.</p>
@@ -2183,7 +2183,7 @@ function CreateWizard({kind, go, user, notify}){
   return (
     <div className="page">
       <div className="wrap">
-        <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand Protocol</button> / <button onClick={()=>go(`/${kind}`)}>{isSHO?'SHO':'SSO'}</button> / New</div>
+        <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand</button> / <button onClick={()=>go(`/${kind}`)}>{isSHO?'SHO':'SSO'}</button> / New</div>
         <div className="page-head"><h1>New {isSHO?'Strong Hold':'Strong Shill'} Offering</h1></div>
 
         <div className="wizard">
@@ -2382,7 +2382,7 @@ function Register({go, user, notify}){
   return (
     <div className="page">
       <div className="wrap" style={{maxWidth:520}}>
-        <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand Protocol</button> / Register</div>
+        <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand</button> / Register</div>
         <h1 style={{marginBottom:8}}>Link your X account</h1>
         <p className="camp-meta" style={{marginBottom:28}}>One registration covers every Strong Shill Offering campaign you ever participate in &mdash; this calls Registry.registerHandle(...) once, on-chain.</p>
         <div className="panel">
@@ -2434,7 +2434,7 @@ function LinkXCallback({go, user, notify}){
   return (
     <div className="page">
       <div className="wrap" style={{maxWidth:520}}>
-        <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand Protocol</button> / Register</div>
+        <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand</button> / Register</div>
         <h1 style={{marginBottom:8}}>Confirm your X link</h1>
         <div className="panel">
           {oauthError ? (
@@ -2537,7 +2537,7 @@ function Profile({go, user, notify}){
   return (
     <div className="page">
       <div className="wrap" style={{maxWidth:980}}>
-        <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand Protocol</button> / Profile</div>
+        <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand</button> / Profile</div>
 
         <div className="profile-head">
           <div className="profile-avatar"><IcoWallet size={22}/></div>
@@ -2715,7 +2715,7 @@ function TopNav({route, go, theme, setTheme, user}){
       <div className="topnav-inner">
         <button className="brand" onClick={()=>go('/')}>
           <span className="brand-mark"><IcoLock size={14} sw={2}/></span>
-          <span className="brand-word">Diamond Hand Protocol</span>
+          <span className="brand-word">Diamond Hand</span>
         </button>
         <div className="nav-links">
           <button className={`nav-link ${is('/sho')?'active':''}`} onClick={()=>go('/sho')}><IcoTrendUp size={13}/>SHO</button>

@@ -1,7 +1,7 @@
 {
   "name": "registration-service",
   "version": "0.1.0",
-  "description": "Diamond Hand Protocol Registration Service (Stage 0's last item) -- X OAuth 2.0 (PKCE) + wallet<->handle attestation signing for Registry.registerHandle",
+  "description": "Diamond Hand Registration Service (Stage 0's last item) -- X OAuth 2.0 (PKCE) + wallet<->handle attestation signing for Registry.registerHandle",
   "main": "src/server.js",
   "scripts": {
     "migrate": "node scripts/migrate.js",

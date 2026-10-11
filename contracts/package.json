@@ -1,7 +1,7 @@
 {
   "name": "contracts",
   "version": "1.0.0",
-  "description": "Diamond Hand Protocol smart contracts (SHO/SSO factories and campaigns, Registry)",
+  "description": "Diamond Hand smart contracts (SHO/SSO factories and campaigns, Registry)",
   "main": "index.js",
   "scripts": {
     "compile": "node scripts/compile.js",
