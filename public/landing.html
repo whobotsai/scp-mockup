@@ -104,6 +104,16 @@ a{color:inherit;}
 .footer{border-top:1px solid var(--border);padding:24px 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;color:var(--text-faint);font-size:12.5px;}
 .footer a{text-decoration:none;color:inherit;display:inline-flex;align-items:center;gap:6px;}
 .footer a:hover{color:var(--text-dim);}
+
+.powered-by{border-top:1px solid var(--border);padding:32px 0;text-align:center;}
+.powered-by .label{
+  font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--text-faint);display:block;margin-bottom:16px;
+}
+.powered-by .brands{
+  display:flex;flex-wrap:wrap;justify-content:center;gap:10px 28px;
+  color:var(--text-dim);font-size:14px;font-weight:600;
+}
 </style>
 </head>
 <body>
@@ -111,7 +121,7 @@ a{color:inherit;}
 <div class="nav">
   <div class="wrap nav-inner">
     <div class="brand"><img src="logo.png" alt=""><span>Diamond Hand</span></div>
-    <a class="x-link" href="https://x.com/diamonhand_fam" target="_blank" rel="noopener noreferrer" aria-label="Follow on X" title="Follow on X">
+    <a class="x-link" href="https://x.com/diamondhand_fam" target="_blank" rel="noopener noreferrer" aria-label="Follow on X" title="Follow on X">
       <svg width="14" height="14" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M5 5l12 12M17 5L5 17"/></svg>
     </a>
   </div>
@@ -120,79 +130,27 @@ a{color:inherit;}
 <div class="hero wrap">
   <span class="eyebrow">Turn Commitment Into Growth</span>
   <h1>Lock it forward,<br>not just away.</h1>
-  <p>Diamond Hand is a performance-based growth mechanism that turns the tokens a creator was going to burn or lock into a reward pool that pays out when the token actually grows. Miss the target and it locks forever &mdash; exactly like a burn. <span class="hl">There is no scenario where this is riskier than doing nothing.</span></p>
-  <a class="x-cta" href="https://x.com/diamonhand_fam" target="_blank" rel="noopener noreferrer">
+  <p class="hl">There is no scenario where this is riskier than doing nothing.</p>
+  <a class="x-cta" href="https://x.com/diamondhand_fam" target="_blank" rel="noopener noreferrer">
     <svg width="15" height="15" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 5l12 12M17 5L5 17"/></svg>
     Follow on X for launch updates
   </a>
   <span class="soon" style="display:block;">Platform in private testing &middot; public launch to be announced</span>
 </div>
 
-<div class="section">
+<div class="powered-by">
   <div class="wrap">
-    <div class="section-head">
-      <span class="eyebrow">Two campaign types</span>
-      <h2>Pay for the behavior that grows a token</h2>
-      <p>Both mechanisms share the same promise: reach the target and the pool pays out to whoever earned it. Miss it, and the pool stays locked forever.</p>
-    </div>
-    <div class="how-grid">
-      <div class="how-col">
-        <div class="how-col-head"><span class="tag sho">SHO</span><h3>Strong Hold Offering</h3></div>
-        <div class="how-step"><span class="n">01</span><div><div class="t">Lock a pool, set milestones</div><div class="d">Creator picks market-cap targets and how much of the pool each one unlocks.</div></div></div>
-        <div class="how-step"><span class="n">02</span><div><div class="t">Traders buy, get ranked</div><div class="d">Net-buy volume in a rolling window ranks the most active wallets on the leaderboard.</div></div></div>
-        <div class="how-step"><span class="n">03</span><div><div class="t">Milestone hits, pool pays out</div><div class="d">A TWAP confirms the crossing, a 24h challenge window runs, then top traders claim their share.</div></div></div>
-      </div>
-      <div class="how-col">
-        <div class="how-col-head"><span class="tag sso">SSO</span><h3>Strong Shill Offering</h3></div>
-        <div class="how-step"><span class="n">01</span><div><div class="t">Lock a pool, set a keyword</div><div class="d">Creator defines a tracked keyword and how often the pool pays out, per epoch.</div></div></div>
-        <div class="how-step"><span class="n">02</span><div><div class="t">Shillers post, get scored</div><div class="d">Registered accounts post using the keyword; engagement scores them each epoch.</div></div></div>
-        <div class="how-step"><span class="n">03</span><div><div class="t">Epoch closes, pool pays out</div><div class="d">Top accounts by score split that epoch's share once the challenge window clears.</div></div></div>
-      </div>
+    <span class="label">Powered by</span>
+    <div class="brands">
+      <span>Solana</span>
+      <span>Robinhood</span>
+      <span>Alchemy</span>
+      <span>Uniswap</span>
+      <span>Pons Family</span>
+      <span>Pump Fun</span>
+      <span>Chainlink</span>
     </div>
   </div>
-</div>
-
-<div class="section">
-  <div class="wrap">
-    <div class="section-head">
-      <span class="eyebrow">Why it works</span>
-      <h2>The same downside as a burn.<br>Only the upside is new.</h2>
-    </div>
-    <div class="value-grid">
-      <div class="value-card">
-        <span class="k">For creators</span>
-        <h3>Trade with a bounty on it, from your side of the table</h3>
-        <p>The bag you were going to burn carries the exact same risk. If the token performs, that bag becomes a growth engine instead of ash.</p>
-      </div>
-      <div class="value-card">
-        <span class="k">For traders</span>
-        <h3>Buying isn't just a bet on price anymore</h3>
-        <p>Rank in the leaderboard when a milestone hits and you're paid straight from the pool &mdash; in USDC, ETH, or the token itself.</p>
-      </div>
-      <div class="value-card">
-        <span class="k">For shillers</span>
-        <h3>Get paid for amplification that actually lands</h3>
-        <p>Post with the campaign's keyword, build real engagement, and earn a share of every epoch you rank in.</p>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="closing wrap">
-  <h2>Diamond hands get paid to hold.</h2>
-  <p>Follow along for the public launch &mdash; no spam, just the one announcement that matters.</p>
-  <a class="x-cta" href="https://x.com/diamonhand_fam" target="_blank" rel="noopener noreferrer">
-    <svg width="15" height="15" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 5l12 12M17 5L5 17"/></svg>
-    Follow @diamonhand_fam
-  </a>
-</div>
-
-<div class="wrap footer">
-  <span>&copy; Diamond Hand</span>
-  <a href="https://x.com/diamonhand_fam" target="_blank" rel="noopener noreferrer">
-    <svg width="12" height="12" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M5 5l12 12M17 5L5 17"/></svg>
-    Follow on X
-  </a>
 </div>
 
 </body>
