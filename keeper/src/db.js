@@ -18,15 +18,17 @@ async function setCursor(key, lastBlock) {
 }
 
 /// c.windowSeconds: SHO only, null for an SSO row. c.keyword: SSO only, null for an SHO row.
+/// c.network: 'evm' | 'solana', defaults to 'evm' for every existing call site
+/// (campaignIndexer.js / ssoCampaignIndexer.js never pass it — see migrations/008_solana.sql).
 async function upsertCampaign(c) {
   await pool.query(
     `INSERT INTO campaigns
-       (campaign_id, factory, campaign_address, token, reward_token, creator,
+       (campaign_id, network, factory, campaign_address, token, reward_token, creator,
         created_at, duration_seconds, leaderboard_size, window_seconds, keyword)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
      ON CONFLICT (campaign_address) DO NOTHING`,
     [
-      c.campaignId, c.factory, c.campaignAddress, c.token, c.rewardToken, c.creator,
+      c.campaignId, c.network ?? "evm", c.factory, c.campaignAddress, c.token, c.rewardToken, c.creator,
       c.createdAt, c.durationSeconds, c.leaderboardSize, c.windowSeconds ?? null, c.keyword ?? null,
     ]
   );

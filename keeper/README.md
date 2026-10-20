@@ -37,6 +37,8 @@ src/
     ponsBondingCurve.js   NOT IMPLEMENTED, and deliberately not used for now — see below
   abis/sho.js           Minimal hand-picked SHO ABI fragments (not the full contract interface)
   abis/sso.js           Same, for SSOFactory/SSOCampaign/Registry
+  abis/solana.js        Hand-written Borsh decoders for sho_solana/sso_solana account data
+  solanaCampaignIndexer.js Discovers sho_solana/sso_solana campaigns, populates `campaigns` — see below
   index.js              Entry point: polling loop wiring all of the above together
 migrations/
   001_init.sql               Postgres schema (subset of the full design doc's data model)
@@ -46,12 +48,52 @@ migrations/
   005_price_samples.sql       Price/TWAP Oracle's raw price samples
   006_root_submissions.sql    On-chain Poster's proposed/confirmed/failed tracking table
   007_sso.sql                 SSO's campaigns columns, sso_posts, handle_registrations
+  008_solana.sql               Adds `campaigns.network` ('evm' | 'solana'), see below
 scripts/
   register-token-pool.js     One-off: tell the indexer where a token's real pool lives
   fast-forward-cursor.js     One-off: skip a cursor past a backfill gap that's too slow to catch up
   post-milestone-root.js     Manual SHO override/backfill — normally onchainPoster.js does this
   claim-milestone.js         Claims a wallet's share of an already-posted milestone/epoch reward
 ```
+
+## Solana support: campaign discovery only, nothing deployed yet
+
+[`../contracts-solana/`](../contracts-solana/) ports SHO and SSO to Solana (Anchor
+programs `sho_solana`/`sso_solana`), but **has never been built to BPF/SBF or deployed
+anywhere, not even localnet** — see that package's own README. Everything below is
+written and unit-tested against that still-undeployed design, not validated against a
+live program the way the EVM indexing described further down is.
+
+`solanaCampaignIndexer.js` watches each program's `Config` account for its `next_id`
+counter and, for every id between the stored cursor and that count, derives the
+campaign's PDA directly (no `getProgramAccounts` scan, no event log to watch — a Solana
+campaign's address is a pure function of its id, see that file's own header) and decodes
+it with `abis/solana.js`'s hand-written Borsh layouts, writing into the same `campaigns`
+table the EVM indexer uses, tagged `network = 'solana'`.
+
+**Scope is deliberately campaign discovery only** — same "populate `campaigns`, nothing
+more" job `campaignIndexer.js`/`ssoCampaignIndexer.js` do for EVM. Not implemented for
+Solana campaigns at all yet:
+- Trade indexing / price sampling (`tradeIndexer.js`/`priceSampler.js`'s EVM-only) — needs
+  a chosen Solana DEX source first, the same unresolved gap Pons.family already is below.
+- The Milestone/Epoch Engine and On-chain Poster — a Solana campaign's milestones/epochs
+  never advance or get a root posted, because nothing drives `post_milestone_root`/
+  `post_epoch_root` for it yet.
+- Claiming — `scripts/claim-milestone.js` is EVM/ethers-only.
+
+Enabling this (`SOLANA_RPC_URL` + `SHO_SOLANA_PROGRAM_ID`/`SSO_SOLANA_PROGRAM_ID` in
+`.env`) against real deployed programs will index campaigns into the DB, but they'll sit
+there with no further progress — don't point this at a program with real funds expecting
+milestones to resolve on their own.
+
+**Known accepted risk**: `@solana/web3.js@1.95.3` pulls in `bigint-buffer`, which
+`npm audit` flags as a high-severity buffer-overflow advisory affecting every 1.x release
+up to 1.99.0 (only the v2/v3 rewrite drops it, a breaking API change not taken on here to
+stay consistent with the same version vendored for the frontend — see
+`public/vendor/solanaWeb3.min.js`). This keeper only decodes data from the RPC endpoint
+you configure in `SOLANA_RPC_URL`, not arbitrary user input, so the practical exposure is
+a compromised/malicious RPC response — worth revisiting alongside the rest of Stage 3
+(`docs/BACKEND_ROADMAP.md`), not blocking for Stage 1-scoped discovery work.
 
 ## Deliberate simplification: no Pons phase, self-deployed AMM on testnet
 

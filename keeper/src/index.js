@@ -10,7 +10,9 @@
 "use strict";
 require("dotenv").config();
 const { ethers } = require("ethers");
+const { Connection } = require("@solana/web3.js");
 const { pollNewCampaigns } = require("./campaignIndexer");
+const { pollNewSolanaCampaigns } = require("./solanaCampaignIndexer");
 const { pollTradesForCampaign } = require("./tradeIndexer");
 const { netBuyVolumeForCampaign } = require("./volumeAggregator");
 const { samplePrice } = require("./priceSampler");
@@ -57,7 +59,7 @@ async function tickSso(provider, c) {
   await checkEpochs(provider, c);
 }
 
-async function tick(provider, keeperWallet, publishIntervalMs) {
+async function tick(provider, keeperWallet, publishIntervalMs, solanaConnection) {
   await pollNewCampaigns(provider, process.env.SHO_FACTORY_ADDRESS, Number(process.env.SHO_FACTORY_DEPLOY_BLOCK || 0));
 
   // SSO/Registry discovery only run once their addresses are actually configured -- this
@@ -68,6 +70,18 @@ async function tick(provider, keeperWallet, publishIntervalMs) {
   }
   if (process.env.REGISTRY_ADDRESS) {
     await pollNewRegistrations(provider, process.env.REGISTRY_ADDRESS, Number(process.env.REGISTRY_DEPLOY_BLOCK || 0));
+  }
+
+  // Solana campaign discovery (see solanaCampaignIndexer.js) -- same "optional" posture:
+  // stays off entirely unless SOLANA_RPC_URL plus a program id is actually configured, and
+  // each program is independently optional of the other. Trade indexing / root posting for
+  // a Solana campaign aren't implemented yet (see contracts-solana/README.md), so a
+  // discovered Solana campaign sits in `campaigns` with no further ticks against it below.
+  if (solanaConnection && process.env.SHO_SOLANA_PROGRAM_ID) {
+    await pollNewSolanaCampaigns(solanaConnection, process.env.SHO_SOLANA_PROGRAM_ID, "sho");
+  }
+  if (solanaConnection && process.env.SSO_SOLANA_PROGRAM_ID) {
+    await pollNewSolanaCampaigns(solanaConnection, process.env.SSO_SOLANA_PROGRAM_ID, "sso");
   }
 
   const campaigns = await db.listCampaigns();
@@ -124,11 +138,20 @@ async function main() {
     console.log("[keeper] KEEPER_PRIVATE_KEY not set -- automatic root posting is disabled this run.");
   }
 
+  // Solana campaign discovery (see "if (solanaConnection ..." in tick() above) is entirely
+  // optional, same posture as SSO_FACTORY_ADDRESS/REGISTRY_ADDRESS — no SOLANA_RPC_URL means
+  // no Connection is even constructed, and the keeper stays EVM-only, exactly as it always
+  // has been.
+  const solanaConnection = process.env.SOLANA_RPC_URL ? new Connection(process.env.SOLANA_RPC_URL, "confirmed") : null;
+  if (!solanaConnection) {
+    console.log("[keeper] SOLANA_RPC_URL not set -- Solana campaign discovery is disabled this run.");
+  }
+
   console.log(`Keeper (Stage 1, steps 1-4) starting. Polling every ${pollIntervalMs}ms.`);
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
-      await tick(provider, keeperWallet, publishIntervalMs);
+      await tick(provider, keeperWallet, publishIntervalMs, solanaConnection);
     } catch (e) {
       console.error("[keeper] tick failed:", e);
     }
