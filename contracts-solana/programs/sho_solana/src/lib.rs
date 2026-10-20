@@ -13,7 +13,8 @@
 //!   likewise `claim_sol` / `claim_spl`) rather than Solidity's single `rewardToken ==
 //!   address(0)` branch, because Anchor account validation needs concrete account types
 //!   up front, not a runtime branch inside the handler.
-//! - Merkle leaf encoding differs (merkle.rs) because a Pubkey is 32 bytes, not a
+//! - Merkle leaf encoding differs (../common/src/merkle.rs, shared with sso_solana)
+//!   because a Pubkey is 32 bytes, not a
 //!   20-byte-left-padded-to-32 Ethereum address.
 //! - `status()` (Active/Completed/Expired) isn't computed on-chain; it was a free `view`
 //!   function on EVM, but Solana has no non-billable "read" instruction distinct from a
@@ -36,11 +37,11 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 pub mod constants;
 pub mod errors;
-pub mod merkle;
 pub mod state;
 
 use constants::*;
 use errors::ShoError;
+use sho_sso_common::merkle;
 use state::{Campaign, ClaimReceipt, Config, LeaderboardWindow, Milestone, MilestoneTier};
 
 // Placeholder — replace with the real deployed program's own id (`anchor keys list` after

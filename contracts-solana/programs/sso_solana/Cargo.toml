@@ -1,0 +1,21 @@
+[package]
+name = "sso_solana"
+version = "0.1.0"
+description = "Strong Shill Offering campaigns, ported to Solana (Anchor)"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "sso_solana"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+
+[dependencies]
+anchor-lang = { version = "0.30.1", features = ["init-if-needed"] }
+anchor-spl = { version = "0.30.1", features = ["token", "associated_token"] }
+sho_sso_common = { path = "../common" }

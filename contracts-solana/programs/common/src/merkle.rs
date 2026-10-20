@@ -1,11 +1,11 @@
-//! Merkle-claim verification for Solana SHO campaigns.
+//! Merkle-claim verification shared by sho_solana and sso_solana.
 //!
-//! This is the Solana counterpart of contracts/src/libraries/ClaimVerifier.sol: same
-//! double-hashed leaf (the standard mitigation against second-preimage attacks) and the
-//! same sorted-pair internal-node convention as keeper/src/merkleTree.js's `hashPair`, so a
-//! Solana-aware tree builder can reuse the identical algorithm shape — only the leaf
-//! encoding changes, because a Pubkey is 32 bytes (no left-padding needed, unlike a 20-byte
-//! Ethereum address under `abi.encode`).
+//! The Solana counterpart of contracts/src/libraries/ClaimVerifier.sol: same double-hashed
+//! leaf (the standard mitigation against second-preimage attacks) and the same sorted-pair
+//! internal-node convention as keeper/src/merkleTree.js's `hashPair`, so a Solana-aware tree
+//! builder can reuse the identical algorithm shape — only the leaf encoding changes, because
+//! a Pubkey is 32 bytes (no left-padding needed, unlike a 20-byte Ethereum address under
+//! `abi.encode`).
 //!
 //! Leaf encoding: `keccak256(keccak256(account_pubkey(32 bytes) || amount_be(32 bytes)))`.
 //! `amount` is widened from u64 to a 32-byte big-endian buffer (zero-padded) purely so the

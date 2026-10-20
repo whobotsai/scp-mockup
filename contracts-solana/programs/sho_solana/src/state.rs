@@ -1,24 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::constants::MAX_MILESTONES;
-
-/// Mirrors contracts/src/libraries/Types.sol::LeaderboardWindow.
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
-pub enum LeaderboardWindow {
-    H24,
-    D7,
-    D30,
-}
-
-/// Mirrors contracts/src/libraries/Types.sol::MilestoneTier — exactly these four fixed
-/// tiers, per PRD §4.1 and §5.
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, InitSpace)]
-pub enum MilestoneTier {
-    M100K,
-    M250K,
-    M1M,
-    M5M,
-}
+pub use sho_sso_common::types::{LeaderboardWindow, MilestoneTier};
 
 /// Mirrors SHOCampaign.sol's `Milestone` struct.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, InitSpace)]

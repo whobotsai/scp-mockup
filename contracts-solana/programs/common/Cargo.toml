@@ -1,0 +1,11 @@
+[package]
+name = "sho_sso_common"
+version = "0.1.0"
+edition = "2021"
+description = "Code shared by sho_solana and sso_solana, mirroring how contracts/src/libraries/*.sol and FactoryBase.sol are shared by SHOFactory/SSOFactory on the EVM side."
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+anchor-lang = "0.30.1"

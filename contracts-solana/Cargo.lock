@@ -1908,6 +1908,14 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
+ "sho_sso_common",
+]
+
+[[package]]
+name = "sho_sso_common"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
 ]
 
 [[package]]
@@ -2355,6 +2363,15 @@ dependencies = [
  "spl-discriminator",
  "spl-pod",
  "spl-program-error",
+]
+
+[[package]]
+name = "sso_solana"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "sho_sso_common",
 ]
 
 [[package]]
