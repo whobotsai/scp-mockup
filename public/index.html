@@ -544,6 +544,13 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px;}
      other package in this repo uses (see e.g. ../api/package.json) -- copied straight from
      ethers' own dist/ethers.umd.min.js, see vendor/ETHERS_LICENSE.md. Exposes window.ethers. -->
 <script src="vendor/ethers.umd.min.js"></script>
+<!-- Vendored the same way as ethers.umd.min.js above, from @solana/web3.js's own
+     lib/index.iife.min.js (npm pack @solana/web3.js@1.95.3), see
+     vendor/SOLANA_WEB3_LICENSE.md. Exposes window.solanaWeb3. Used for the Solana half of
+     campaign creation -- see contracts-solana/README.md for what's deployed (nothing, yet)
+     and what SCP_CONFIG.SHO_SOLANA_PROGRAM_ID / SSO_SOLANA_PROGRAM_ID need to become once
+     it is. -->
+<script src="vendor/solanaWeb3.min.js"></script>
 
 <script type="text/babel" data-presets="react">
 const {useState, useEffect, useMemo, useCallback, useRef} = React;
@@ -570,6 +577,21 @@ const SCP_CONFIG = Object.assign({
   // comment). Set this once one exists; the wizard disables the USDC option while it's empty
   // rather than sending a made-up address on-chain.
   USDC_ADDRESS: '',
+
+  // ---- Solana (contracts-solana/) -----------------------------------------------------
+  // Placeholders. SHO_SOLANA_PROGRAM_ID / SSO_SOLANA_PROGRAM_ID match the declare_id!()
+  // values still in contracts-solana/programs/{sho_solana,sso_solana}/src/lib.rs as of this
+  // writing -- i.e. the standard Anchor template defaults, NOT real deployed programs (see
+  // that package's README: it has never been built to BPF/SBF or deployed anywhere, not even
+  // localnet). Creating a Solana campaign will fail until these are replaced with real
+  // deployed program ids.
+  SOLANA_CLUSTER: 'devnet',
+  SOLANA_RPC_URL: 'https://api.devnet.solana.com',
+  SOLANA_EXPLORER_URL: 'https://explorer.solana.com',
+  SHO_SOLANA_PROGRAM_ID: 'Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS',
+  SSO_SOLANA_PROGRAM_ID: '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin',
+  // No SPL stablecoin configured yet, same reasoning as USDC_ADDRESS above.
+  SOLANA_USDC_MINT: '',
 }, window.SCP_CONFIG || {});
 const CHAIN_ID_HEX = '0x' + SCP_CONFIG.CHAIN_ID.toString(16);
 
@@ -623,6 +645,231 @@ function readProvider(){
   if(!window.ethers){ throw new Error('web3 library failed to load'); }
   if(!_readProvider) _readProvider = new window.ethers.JsonRpcProvider(SCP_CONFIG.RPC_URL);
   return _readProvider;
+}
+
+/* ===================== SOLANA (contracts-solana/) ===================== */
+// Raw instruction-building against sho_solana / sso_solana -- no Anchor TS client (no
+// reliable no-build-step browser bundle for it the way ethers/web3.js have), so this hand-
+// encodes the same Borsh shapes contracts-solana/programs/*/src/lib.rs's instructions
+// expect, and computes Anchor's 8-byte sighash discriminator itself via the browser's
+// native Web Crypto (sha256("global:<ix name>").slice(0,8)) rather than pulling in a
+// hashing library just for that.
+const SPL_TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+const SPL_ASSOCIATED_TOKEN_PROGRAM_ID = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
+
+let _solanaConnection = null;
+function solanaConnection(){
+  if(!window.solanaWeb3){ throw new Error('Solana web3 library failed to load'); }
+  if(!_solanaConnection) _solanaConnection = new window.solanaWeb3.Connection(SCP_CONFIG.SOLANA_RPC_URL, 'confirmed');
+  return _solanaConnection;
+}
+function solanaExplorerAddressUrl(addr){
+  return `${SCP_CONFIG.SOLANA_EXPLORER_URL}/address/${addr}?cluster=${SCP_CONFIG.SOLANA_CLUSTER}`;
+}
+function solanaExplorerTxUrl(sig){
+  return `${SCP_CONFIG.SOLANA_EXPLORER_URL}/tx/${sig}?cluster=${SCP_CONFIG.SOLANA_CLUSTER}`;
+}
+
+function concatBytes(...parts){
+  const total = parts.reduce((s,p)=>s+p.length,0);
+  const out = new Uint8Array(total);
+  let off=0; for(const p of parts){ out.set(p,off); off+=p.length; }
+  return out;
+}
+// Only the handful of Borsh shapes sho_solana/sso_solana's instructions actually take.
+const borsh = {
+  u16(n){ const b=new Uint8Array(2); new DataView(b.buffer).setUint16(0,Number(n),true); return b; },
+  u64(n){ const b=new Uint8Array(8); new DataView(b.buffer).setBigUint64(0,BigInt(n),true); return b; },
+  i64(n){ return borsh.u64(n); }, // same bit pattern for the non-negative durations/timestamps this app ever sends
+  pubkey(pk){ return new window.solanaWeb3.PublicKey(pk).toBytes(); },
+  enumVariant(i){ return Uint8Array.of(i); },
+  string(s){
+    const body = new TextEncoder().encode(s);
+    const len = new Uint8Array(4); new DataView(len.buffer).setUint32(0,body.length,true);
+    return concatBytes(len, body);
+  },
+  vecU16(arr){
+    const len = new Uint8Array(4); new DataView(len.buffer).setUint32(0,arr.length,true);
+    return concatBytes(len, ...arr.map(n=>borsh.u16(n)));
+  },
+  vecEnumVariant(arr){
+    const len = new Uint8Array(4); new DataView(len.buffer).setUint32(0,arr.length,true);
+    return concatBytes(len, Uint8Array.from(arr));
+  },
+};
+
+async function anchorDiscriminator(name){
+  const bytes = new TextEncoder().encode(`global:${name}`);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return new Uint8Array(digest).slice(0,8);
+}
+async function buildAnchorIx({programId, name, keys, args}){
+  const disc = await anchorDiscriminator(name);
+  const data = concatBytes(disc, ...args);
+  return new window.solanaWeb3.TransactionInstruction({
+    programId: new window.solanaWeb3.PublicKey(programId),
+    keys,
+    data,
+  });
+}
+function acct(pubkey, isSigner, isWritable){
+  return { pubkey: new window.solanaWeb3.PublicKey(pubkey), isSigner, isWritable };
+}
+function solanaPda(programId, seeds){
+  const [addr] = window.solanaWeb3.PublicKey.findProgramAddressSync(seeds, new window.solanaWeb3.PublicKey(programId));
+  return addr;
+}
+function associatedTokenAddress(owner, mint){
+  return solanaPda(SPL_ASSOCIATED_TOKEN_PROGRAM_ID, [
+    owner.toBytes(), new window.solanaWeb3.PublicKey(SPL_TOKEN_PROGRAM_ID).toBytes(), mint.toBytes(),
+  ]);
+}
+
+// Decodes the Config account both programs share the same layout for: 8-byte Anchor
+// discriminator, then bump(1) + authority(32) + treasury(32) + keeper(32) + next_id(8 LE) --
+// see contracts-solana/programs/{sho_solana,sso_solana}/src/state.rs::Config.
+async function fetchSolanaConfig(programId){
+  const connection = solanaConnection();
+  const configPda = solanaPda(programId, [new TextEncoder().encode('config')]);
+  const info = await connection.getAccountInfo(configPda);
+  if(!info) throw new Error('This program\'s Config account was not found on devnet -- has initialize_config been called yet? (see contracts-solana/README.md)');
+  const d = info.data;
+  const treasury = new window.solanaWeb3.PublicKey(d.slice(41,73));
+  const keeper = new window.solanaWeb3.PublicKey(d.slice(73,105));
+  const nextId = new DataView(d.buffer, d.byteOffset+105, 8).getBigUint64(0,true);
+  return {configPda, treasury, keeper, nextId};
+}
+
+async function signAndSendSolanaTx(provider, instructions){
+  const connection = solanaConnection();
+  const tx = new window.solanaWeb3.Transaction();
+  tx.add(...instructions);
+  tx.feePayer = provider.publicKey;
+  const {blockhash, lastValidBlockHeight} = await connection.getLatestBlockhash();
+  tx.recentBlockhash = blockhash;
+  const {signature} = await provider.signAndSendTransaction(tx);
+  await connection.confirmTransaction({signature, blockhash, lastValidBlockHeight}, 'confirmed');
+  return signature;
+}
+
+// windowOrEpochEnum: 0=H24, 1=D7, 2=D30 -- same ordering as Types.LeaderboardWindow /
+// Types.EpochLength on both the EVM and Solana sides (see windowEnumOf() in CreateWizard).
+// rewardMint: null for native SOL, else a window.solanaWeb3.PublicKey.
+async function submitShoCampaignSolana({provider, token, amountRaw, rewardMint, windowEnum, leaderboardSize, durationSecs, tierIndexes, rewardBpsList}){
+  const programId = SCP_CONFIG.SHO_SOLANA_PROGRAM_ID;
+  const creator = provider.publicKey;
+  const {configPda, treasury, nextId} = await fetchSolanaConfig(programId);
+  const id = nextId;
+  const campaignPda = solanaPda(programId, [
+    new TextEncoder().encode('campaign'), configPda.toBytes(), borsh.u64(id),
+  ]);
+
+  const args = [
+    borsh.u64(id),
+    borsh.pubkey(token),
+    borsh.u64(amountRaw),
+    borsh.enumVariant(windowEnum),
+    borsh.u16(leaderboardSize),
+    borsh.i64(durationSecs),
+    borsh.vecEnumVariant(tierIndexes),
+    borsh.vecU16(rewardBpsList),
+  ];
+
+  let ix;
+  if(!rewardMint){
+    ix = await buildAnchorIx({
+      programId, name:'create_campaign_sol', args,
+      keys: [
+        acct(creator, true, true),
+        acct(configPda, false, true),
+        acct(campaignPda, false, true),
+        acct(treasury, false, true),
+        acct(window.solanaWeb3.SystemProgram.programId, false, false),
+      ],
+    });
+  } else {
+    const creatorAta = associatedTokenAddress(creator, rewardMint);
+    const treasuryAta = associatedTokenAddress(treasury, rewardMint);
+    const vaultAta = associatedTokenAddress(campaignPda, rewardMint);
+    ix = await buildAnchorIx({
+      programId, name:'create_campaign_spl', args,
+      keys: [
+        acct(creator, true, true),
+        acct(configPda, false, true),
+        acct(campaignPda, false, true),
+        acct(rewardMint, false, false),
+        acct(creatorAta, false, true),
+        acct(treasuryAta, false, true),
+        acct(treasury, false, false),
+        acct(vaultAta, false, true),
+        acct(SPL_TOKEN_PROGRAM_ID, false, false),
+        acct(SPL_ASSOCIATED_TOKEN_PROGRAM_ID, false, false),
+        acct(window.solanaWeb3.SystemProgram.programId, false, false),
+      ],
+    });
+  }
+
+  const signature = await signAndSendSolanaTx(provider, [ix]);
+  return {signature, campaignAddress: campaignPda.toBase58()};
+}
+
+// epochLengthEnum: 0=H24, 1=D7, 2=D30.
+async function submitSsoCampaignSolana({provider, token, amountRaw, rewardMint, keyword, epochLengthEnum, leaderboardSize, durationSecs, epochRewardBpsList}){
+  const programId = SCP_CONFIG.SSO_SOLANA_PROGRAM_ID;
+  const creator = provider.publicKey;
+  const {configPda, treasury, nextId} = await fetchSolanaConfig(programId);
+  const id = nextId;
+  const campaignPda = solanaPda(programId, [
+    new TextEncoder().encode('campaign'), configPda.toBytes(), borsh.u64(id),
+  ]);
+
+  const args = [
+    borsh.u64(id),
+    borsh.pubkey(token),
+    borsh.u64(amountRaw),
+    borsh.string(keyword),
+    borsh.enumVariant(epochLengthEnum),
+    borsh.u16(leaderboardSize),
+    borsh.i64(durationSecs),
+    borsh.vecU16(epochRewardBpsList),
+  ];
+
+  let ix;
+  if(!rewardMint){
+    ix = await buildAnchorIx({
+      programId, name:'create_campaign_sol', args,
+      keys: [
+        acct(creator, true, true),
+        acct(configPda, false, true),
+        acct(campaignPda, false, true),
+        acct(treasury, false, true),
+        acct(window.solanaWeb3.SystemProgram.programId, false, false),
+      ],
+    });
+  } else {
+    const creatorAta = associatedTokenAddress(creator, rewardMint);
+    const treasuryAta = associatedTokenAddress(treasury, rewardMint);
+    const vaultAta = associatedTokenAddress(campaignPda, rewardMint);
+    ix = await buildAnchorIx({
+      programId, name:'create_campaign_spl', args,
+      keys: [
+        acct(creator, true, true),
+        acct(configPda, false, true),
+        acct(campaignPda, false, true),
+        acct(rewardMint, false, false),
+        acct(creatorAta, false, true),
+        acct(treasuryAta, false, true),
+        acct(treasury, false, false),
+        acct(vaultAta, false, true),
+        acct(SPL_TOKEN_PROGRAM_ID, false, false),
+        acct(SPL_ASSOCIATED_TOKEN_PROGRAM_ID, false, false),
+        acct(window.solanaWeb3.SystemProgram.programId, false, false),
+      ],
+    });
+  }
+
+  const signature = await signAndSendSolanaTx(provider, [ix]);
+  return {signature, campaignAddress: campaignPda.toBase58()};
 }
 
 /* ===================== SMALL SHARED HELPERS (chain/network) ===================== */
@@ -932,6 +1179,56 @@ function useWallet(){
   }, []);
 
   return {wallet, xhandle, connecting, chainOk, connectWallet, connectX, disconnect, getSigner, refreshXHandle};
+}
+
+// Solana wallet connection via whatever injects window.solana -- Phantom's own provider
+// shape, which Solflare/Backpack also implement for compatibility. Mirrors useWallet()
+// above as closely as the two chains' wallet APIs allow: silent eth_accounts-style restore
+// on mount (connect({onlyIfTrusted:true}) never prompts), connect/disconnect listeners,
+// an explicit connectSolanaWallet() for the user-initiated case.
+function useSolanaWallet(){
+  const [publicKey, setPublicKey] = useState(null); // a window.solanaWeb3.PublicKey, or null
+  const [connecting, setConnecting] = useState(false);
+
+  useEffect(()=>{
+    const provider = window.solana;
+    if(!provider) return;
+    provider.connect({onlyIfTrusted:true}).then(res=>{ setPublicKey(res.publicKey); }).catch(()=>{});
+    const onConnect = ()=> setPublicKey(provider.publicKey || null);
+    const onDisconnect = ()=> setPublicKey(null);
+    provider.on && provider.on('connect', onConnect);
+    provider.on && provider.on('disconnect', onDisconnect);
+    return ()=>{
+      provider.removeListener && provider.removeListener('connect', onConnect);
+      provider.removeListener && provider.removeListener('disconnect', onDisconnect);
+    };
+  }, []);
+
+  const connectSolanaWallet = useCallback(async ()=>{
+    const provider = window.solana;
+    if(!provider){
+      alert('No Solana wallet extension found. Install Phantom (or another Phantom-compatible wallet) to continue.');
+      return;
+    }
+    setConnecting(true);
+    try {
+      const res = await provider.connect();
+      setPublicKey(res.publicKey);
+    } catch(e){
+      console.error(e);
+      alert('Solana wallet connection failed: '+(e && (e.message||String(e))));
+    } finally {
+      setConnecting(false);
+    }
+  }, []);
+
+  const disconnect = useCallback(()=>{
+    const provider = window.solana;
+    try{ provider && provider.disconnect && provider.disconnect(); }catch(e){}
+    setPublicKey(null);
+  }, []);
+
+  return {publicKey, connecting, connectSolanaWallet, disconnect, provider: window.solana};
 }
 
 /* ===================== ICONS ===================== */
@@ -2033,12 +2330,13 @@ function EmptyRoute({go}){
 const SHO_STEPS = ['Token & amount','Reward & ranking','Duration','Milestones','Review'];
 const SSO_STEPS = ['Token & amount','Reward & keyword','Epoch & size','Duration & split','Review'];
 
-function CreateWizard({kind, go, user, notify}){
+function CreateWizard({kind, go, user, solanaUser, notify}){
   const isSHO = kind==='sho';
   const steps = isSHO ? SHO_STEPS : SSO_STEPS;
   const [step,setStep] = useState(0);
   const [submitting, setSubmitting] = useState(null); // null | 'approving' | 'creating'
   const [form,setForm] = useState({
+    network:'evm', // 'evm' | 'solana' -- picked once, before a wallet is even connected
     contract:'', token:'',
     amount:'10000000', denom:'token', window:'7D', size:100,
     duration:'30D', keyword:'$MYTOKEN', epochLen:'7D',
@@ -2046,34 +2344,71 @@ function CreateWizard({kind, go, user, notify}){
     msOn: {'100K':true,'250K':true,'1M':true,'5M':true},
   });
   const set = (k,v)=> setForm(f=>({...f,[k]:v}));
+  const isSolana = form.network==='solana';
 
   // Debounced live lookup against ../api's GET /tokens/:address -- replaces the old
   // hand-authored TOKEN_REGISTRY map (see api/src/tokenRoutes.js's own header on why this is
-  // "sourced from the real chain instead of a hand-authored map" now).
+  // "sourced from the real chain instead of a hand-authored map" now). EVM-only: there's no
+  // Solana equivalent yet (the keeper/API don't index Solana at all -- see
+  // contracts-solana/README.md), so Solana just validates the address looks real.
   const [debouncedAddr, setDebouncedAddr] = useState('');
   useEffect(()=>{
     const t = setTimeout(()=> setDebouncedAddr(form.contract.trim()), 400);
     return ()=>clearTimeout(t);
   }, [form.contract]);
-  const validAddr = window.ethers && window.ethers.isAddress(debouncedAddr);
-  const tokenLookup = useApiFetch(validAddr ? `/tokens/${debouncedAddr}` : null, [validAddr, debouncedAddr]);
-  const resolved = tokenLookup.data;
+  const validEvmAddr = !isSolana && window.ethers && window.ethers.isAddress(debouncedAddr);
+  const tokenLookup = useApiFetch(validEvmAddr ? `/tokens/${debouncedAddr}` : null, [validEvmAddr, debouncedAddr]);
+
+  const validSolanaMint = useMemo(()=>{
+    if(!isSolana || !form.contract.trim()) return false;
+    try { new window.solanaWeb3.PublicKey(form.contract.trim()); return true; } catch(e){ return false; }
+  }, [isSolana, form.contract]);
+
+  const resolved = isSolana
+    ? (validSolanaMint ? {name:'Unverified SPL token', ticker: form.token || 'TOKEN'} : null)
+    : tokenLookup.data;
 
   useEffect(()=>{
-    if(resolved) setForm(f=> f.token===resolved.ticker ? f : {...f, token:resolved.ticker});
-  }, [resolved]);
+    if(!isSolana && resolved) setForm(f=> f.token===resolved.ticker ? f : {...f, token:resolved.ticker});
+  }, [isSolana, resolved]);
 
-  const denomLabel = form.denom==='token' ? (resolved?resolved.ticker:form.token) : form.denom.toUpperCase();
+  const denomLabel = form.denom==='token' ? (resolved?resolved.ticker:form.token)
+    : form.denom==='eth' ? (isSolana ? 'SOL' : SCP_CONFIG.NATIVE_SYMBOL)
+    : form.denom.toUpperCase();
 
-  if(!user.wallet){
+  const networkPicker = (
+    <div className="panel" style={{marginBottom:20}}>
+      <div className="eyebrow" style={{marginBottom:10}}>Network</div>
+      <div className="opt-row">
+        <button className={`opt-btn ${!isSolana?'sel':''}`} disabled={!!submitting} onClick={()=>set('network','evm')}>{SCP_CONFIG.CHAIN_NAME} (EVM)</button>
+        <button className={`opt-btn ${isSolana?'sel':''}`} disabled={!!submitting} onClick={()=>set('network','solana')}>Solana ({SCP_CONFIG.SOLANA_CLUSTER})</button>
+      </div>
+      {isSolana && (
+        <div className="help" style={{marginTop:10}}>
+          Solana support is new: campaigns created here aren&rsquo;t shown in Discover or any
+          leaderboard yet (the keeper and API don&rsquo;t index Solana activity yet), and the
+          on-chain programs themselves have never been deployed anywhere real &mdash; see
+          contracts-solana/README.md.
+        </div>
+      )}
+    </div>
+  );
+
+  const walletConnected = isSolana ? !!solanaUser.publicKey : !!user.wallet;
+  if(!walletConnected){
     return (
       <div className="page">
         <div className="wrap" style={{maxWidth:520}}>
           <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand</button> / <button onClick={()=>go(`/${kind}`)}>{isSHO?'SHO':'SSO'}</button> / New</div>
+          {networkPicker}
           <div className="empty-state">
-            <h3>Connect a wallet to create a campaign</h3>
+            <h3>Connect a {isSolana?'Solana':''} wallet to create a campaign</h3>
             <p>The connected wallet becomes the on-chain creator of record and locks the reward pool, so it has to be set before you can configure a campaign.</p>
-            <div style={{marginTop:16}}><Btn icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn></div>
+            <div style={{marginTop:16}}>
+              <Btn icon={IcoWallet} onClick={isSolana?solanaUser.connectSolanaWallet:user.connectWallet}>
+                {isSolana && solanaUser.connecting ? 'Connecting…' : 'Connect wallet'}
+              </Btn>
+            </div>
           </div>
         </div>
       </div>
@@ -2103,7 +2438,65 @@ function CreateWizard({kind, go, user, notify}){
     return {address: form.contract, decimals: Number(decimals)};
   }
 
+  // Solana counterpart of resolveRewardToken(). mint=null means native SOL (9 decimals).
+  // No live SPL metadata lookup exists yet, so the 'token' case reads decimals straight off
+  // the mint account itself -- SPL Token's Mint layout puts decimals at a fixed byte offset
+  // (44: 4-byte COption tag + 32-byte authority pubkey for mint_authority, then an 8-byte
+  // supply, then the 1-byte decimals field).
+  async function resolveSolanaRewardAsset(){
+    if(form.denom==='eth') return {mint:null, decimals:9};
+    if(form.denom==='usdc'){
+      if(!SCP_CONFIG.SOLANA_USDC_MINT) throw new Error('No SPL USDC mint configured for this cluster yet (SCP_CONFIG.SOLANA_USDC_MINT is empty).');
+      return {mint: new window.solanaWeb3.PublicKey(SCP_CONFIG.SOLANA_USDC_MINT), decimals: 6};
+    }
+    const mint = new window.solanaWeb3.PublicKey(form.contract.trim());
+    const info = await solanaConnection().getAccountInfo(mint);
+    if(!info) throw new Error(`Could not find that mint account on ${SCP_CONFIG.SOLANA_CLUSTER}.`);
+    return {mint, decimals: info.data[44]};
+  }
+
+  const submitSolana = async ()=>{
+    if(!resolved){ notify('Enter a valid Solana mint address first.'); return; }
+    try {
+      const {mint, decimals} = await resolveSolanaRewardAsset();
+      const amountRaw = window.ethers.parseUnits(String(form.amount||'0'), decimals);
+      setSubmitting('creating');
+      notify('Submitting campaign creation on Solana...');
+      const tokenMint = new window.solanaWeb3.PublicKey(form.contract.trim());
+
+      let result;
+      if(isSHO){
+        const chosenTiers = MS_TIERS.filter(t=>form.msOn[t.id]);
+        result = await submitShoCampaignSolana({
+          provider: solanaUser.provider, token: tokenMint, amountRaw, rewardMint: mint,
+          windowEnum: windowEnumOf(form.window), leaderboardSize: form.size,
+          durationSecs: durationSecondsOf(form.duration),
+          tierIndexes: chosenTiers.map(t=>MS_TIERS.findIndex(x=>x.id===t.id)),
+          rewardBpsList: chosenTiers.map(t=>form.ms[t.id]),
+        });
+      } else {
+        const epochCount = Math.max(1, Math.round(durationSecondsOf(form.duration)/(windowEnumOf(form.epochLen)===0?86400:windowEnumOf(form.epochLen)===1?604800:2592000)));
+        const evenBps = Math.floor(10000/epochCount);
+        const epochBpsList = Array.from({length:epochCount}, (_,i)=> i===epochCount-1 ? 10000-evenBps*(epochCount-1) : evenBps);
+        result = await submitSsoCampaignSolana({
+          provider: solanaUser.provider, token: tokenMint, amountRaw, rewardMint: mint,
+          keyword: form.keyword, epochLengthEnum: windowEnumOf(form.epochLen),
+          leaderboardSize: form.size, durationSecs: durationSecondsOf(form.duration),
+          epochRewardBpsList: epochBpsList,
+        });
+      }
+
+      notify(`${form.token} ${isSHO?'SHO':'SSO'} campaign created on Solana at ${shortAddr(result.campaignAddress)} (tx ${result.signature.slice(0,8)}…). It won't show up in Discover yet -- see contracts-solana/README.md.`);
+      go(`/${kind}`);
+    } catch(e){
+      notify('Campaign creation failed: '+(e && (e.message||String(e))));
+    } finally {
+      setSubmitting(null);
+    }
+  };
+
   const submit = async ()=>{
+    if(isSolana) return submitSolana();
     if(!resolved){ notify('Resolve a valid token contract first.'); return; }
     try {
       const {address: rewardToken, decimals} = await resolveRewardToken();
@@ -2190,7 +2583,10 @@ function CreateWizard({kind, go, user, notify}){
     <div className="page">
       <div className="wrap">
         <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand</button> / <button onClick={()=>go(`/${kind}`)}>{isSHO?'SHO':'SSO'}</button> / New</div>
-        <div className="page-head"><h1>New {isSHO?'Strong Hold':'Strong Shill'} Offering</h1></div>
+        <div className="page-head">
+          <h1>New {isSHO?'Strong Hold':'Strong Shill'} Offering</h1>
+          <Tag kind={isSHO?'sho':'sso'}>{isSolana ? `Solana ${SCP_CONFIG.SOLANA_CLUSTER}` : SCP_CONFIG.CHAIN_NAME}</Tag>
+        </div>
 
         <div className="wizard">
           <div className="steps">
@@ -2205,9 +2601,15 @@ function CreateWizard({kind, go, user, notify}){
             {step===0 && (
               <>
                 <div className="field">
-                  <label>Token to track &mdash; contract address</label>
-                  <input type="text" className="mono" value={form.contract} onChange={e=>set('contract',e.target.value)} placeholder="0x..."/>
-                  {form.contract.trim()==='' ? null : tokenLookup.loading ? (
+                  <label>Token to track &mdash; {isSolana ? 'mint address' : 'contract address'}</label>
+                  <input type="text" className="mono" value={form.contract} onChange={e=>set('contract',e.target.value)} placeholder={isSolana ? 'Base58 mint address…' : '0x...'}/>
+                  {form.contract.trim()==='' ? null : isSolana ? (
+                    validSolanaMint ? (
+                      <div className="token-resolved"><IcoCheckCirc size={14}/> Looks like a valid Solana address &mdash; no live metadata lookup yet, name it below.</div>
+                    ) : (
+                      <div className="token-resolved bad"><IcoInfo size={14}/> Not a valid base58 Solana address.</div>
+                    )
+                  ) : tokenLookup.loading ? (
                     <div className="token-resolved">Looking up on {SCP_CONFIG.CHAIN_NAME}&hellip;</div>
                   ) : resolved ? (
                     <div className="token-resolved">
@@ -2218,8 +2620,16 @@ function CreateWizard({kind, go, user, notify}){
                       <IcoInfo size={14}/> Not a recognized ERC20 on {SCP_CONFIG.CHAIN_NAME} &mdash; check the address.
                     </div>
                   )}
-                  <div className="help">The Pons.family (or graduated Uniswap V4) token whose activity this campaign tracks &mdash; net-buy volume for SHO, or the account posting about it for SSO. Added by contract, never by typing a ticker.</div>
+                  <div className="help">{isSolana
+                    ? 'The SPL mint whose activity this campaign tracks. Solana token verification isn’t wired up yet (no keeper/API indexing), so paste the mint address directly.'
+                    : 'The Pons.family (or graduated Uniswap V4) token whose activity this campaign tracks — net-buy volume for SHO, or the account posting about it for SSO. Added by contract, never by typing a ticker.'}</div>
                 </div>
+                {isSolana && (
+                  <div className="field">
+                    <label>Token symbol (display only)</label>
+                    <input type="text" value={form.token} onChange={e=>set('token', e.target.value)} placeholder="$MYTOKEN"/>
+                  </div>
+                )}
                 <div className="field">
                   <label>Amount to lock</label>
                   <input type="text" value={form.amount} onChange={e=>set('amount',e.target.value)}/>
@@ -2233,11 +2643,11 @@ function CreateWizard({kind, go, user, notify}){
                 <div className="field">
                   <label>Reward denomination</label>
                   <div className="opt-row">
-                    {[['token', form.token],['usdc','USDC'],['eth', SCP_CONFIG.NATIVE_SYMBOL]].map(([v,l])=>(
-                      <button key={v} className={`opt-btn ${form.denom===v?'sel':''}`} disabled={v==='usdc' && !SCP_CONFIG.USDC_ADDRESS} onClick={()=>set('denom',v)}>{l}</button>
+                    {[['token', form.token],['usdc','USDC'],['eth', isSolana?'SOL':SCP_CONFIG.NATIVE_SYMBOL]].map(([v,l])=>(
+                      <button key={v} className={`opt-btn ${form.denom===v?'sel':''}`} disabled={v==='usdc' && !(isSolana?SCP_CONFIG.SOLANA_USDC_MINT:SCP_CONFIG.USDC_ADDRESS)} onClick={()=>set('denom',v)}>{l}</button>
                     ))}
                   </div>
-                  {!SCP_CONFIG.USDC_ADDRESS && <div className="help">USDC isn&rsquo;t deployed on {SCP_CONFIG.CHAIN_NAME} yet, so that option is disabled here.</div>}
+                  {!(isSolana?SCP_CONFIG.SOLANA_USDC_MINT:SCP_CONFIG.USDC_ADDRESS) && <div className="help">USDC isn&rsquo;t deployed on {isSolana?`Solana ${SCP_CONFIG.SOLANA_CLUSTER}`:SCP_CONFIG.CHAIN_NAME} yet, so that option is disabled here.</div>}
                 </div>
                 <div className="field">
                   <label>Leaderboard window</label>
@@ -2263,11 +2673,11 @@ function CreateWizard({kind, go, user, notify}){
                 <div className="field">
                   <label>Reward denomination</label>
                   <div className="opt-row">
-                    {[['token', form.token],['usdc','USDC'],['eth', SCP_CONFIG.NATIVE_SYMBOL]].map(([v,l])=>(
-                      <button key={v} className={`opt-btn ${form.denom===v?'sel':''}`} disabled={v==='usdc' && !SCP_CONFIG.USDC_ADDRESS} onClick={()=>set('denom',v)}>{l}</button>
+                    {[['token', form.token],['usdc','USDC'],['eth', isSolana?'SOL':SCP_CONFIG.NATIVE_SYMBOL]].map(([v,l])=>(
+                      <button key={v} className={`opt-btn ${form.denom===v?'sel':''}`} disabled={v==='usdc' && !(isSolana?SCP_CONFIG.SOLANA_USDC_MINT:SCP_CONFIG.USDC_ADDRESS)} onClick={()=>set('denom',v)}>{l}</button>
                     ))}
                   </div>
-                  {!SCP_CONFIG.USDC_ADDRESS && <div className="help">USDC isn&rsquo;t deployed on {SCP_CONFIG.CHAIN_NAME} yet, so that option is disabled here.</div>}
+                  {!(isSolana?SCP_CONFIG.SOLANA_USDC_MINT:SCP_CONFIG.USDC_ADDRESS) && <div className="help">USDC isn&rsquo;t deployed on {isSolana?`Solana ${SCP_CONFIG.SOLANA_CLUSTER}`:SCP_CONFIG.CHAIN_NAME} yet, so that option is disabled here.</div>}
                 </div>
                 <div className="field">
                   <label>Tracked keyword</label>
@@ -2750,6 +3160,7 @@ function TopNav({route, go, theme, setTheme, user}){
 function App(){
   const [route,go] = useHashRoute();
   const user = useWallet();
+  const solanaUser = useSolanaWallet();
   const [theme,setTheme] = useState(()=> localStorage.getItem('so_theme') || 'dark');
   const [toast,setToast] = useState(null);
   const notify = (m)=> setToast(m);
@@ -2765,8 +3176,8 @@ function App(){
   const path = route.split('?')[0];
   const parts = path.split('/').filter(Boolean);
   if(route==='/' ) view = <Landing go={go}/>;
-  else if(parts[0]==='sho' && parts[1]==='create') view = <CreateWizard kind="sho" go={go} user={user} notify={notify}/>;
-  else if(parts[0]==='sso' && parts[1]==='create') view = <CreateWizard kind="sso" go={go} user={user} notify={notify}/>;
+  else if(parts[0]==='sho' && parts[1]==='create') view = <CreateWizard kind="sho" go={go} user={user} solanaUser={solanaUser} notify={notify}/>;
+  else if(parts[0]==='sso' && parts[1]==='create') view = <CreateWizard kind="sso" go={go} user={user} solanaUser={solanaUser} notify={notify}/>;
   else if(parts[0]==='sho' && parts[1]) view = <SHODetail id={parts[1]} go={go} user={user} notify={notify}/>;
   else if(parts[0]==='sso' && parts[1]) view = <SSODetail id={parts[1]} go={go} user={user} notify={notify}/>;
   else if(parts[0]==='sho') view = <Discover kind="sho" go={go}/>;

@@ -55,8 +55,16 @@ and doesn't prove" below for what that does and doesn't cover.
   to talk to the EVM contracts — for either campaign type.
 - **No API-side Solana support**: `api/src/*Routes.js` only reads from the EVM-facing
   Postgres tables the keeper populates.
-- **No frontend Solana wallet support**: the app (`public/index.html`) only has an
-  EVM/ethers.js wallet connect flow.
+- **Frontend campaign *creation* now supports Solana** (`public/index.html`'s
+  `CreateWizard`): a network picker, a `window.solana` (Phantom-compatible) wallet connect
+  flow alongside the existing EVM one, and hand-built Anchor instructions (no Anchor TS
+  client — see the "Raw instruction-building" comment above the Solana helpers in
+  `index.html`) for `create_campaign_sol`/`create_campaign_spl` on both programs.
+  `@solana/web3.js` is vendored the same way as `ethers.umd.min.js`, at
+  `public/vendor/solanaWeb3.min.js`. **Discover and claim still have no Solana path at
+  all** — a Solana campaign created through the wizard routes back to the (EVM-only)
+  Discover list rather than a working detail page, because that depends on the keeper/API
+  Solana support above, which doesn't exist yet.
 - **No TS test suite yet** for either program (the equivalent of
   `contracts/test/{sho,sso}.test.js` / `test/helpers/{deploy,merkle,harness}.js`, run with
   `anchor test` against a local validator).
