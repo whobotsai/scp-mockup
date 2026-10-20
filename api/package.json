@@ -5,12 +5,13 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node test/merkleTree.test.js && node test/twap.test.js"
+    "test": "node test/merkleTree.test.js && node test/twap.test.js && node test/solanaAbis.test.js"
   },
   "keywords": [],
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@solana/web3.js": "^1.95.3",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
     "ethers": "^6.17.0",

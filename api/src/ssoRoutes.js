@@ -5,11 +5,13 @@
 "use strict";
 const express = require("express");
 const { ethers } = require("ethers");
+const { PublicKey } = require("@solana/web3.js");
 const db = require("./db");
 const { ERC20_ABI, SSO_CAMPAIGN_ABI, EPOCH_LENGTH_SECONDS } = require("./abis");
+const solanaAbis = require("./solanaAbis");
 const { daysLeft } = require("./shared");
 
-function router(provider) {
+function router(provider, solanaConnection) {
   const r = express.Router();
 
   /// epochs[] with a status per period. Unlike SHO's milestones (unlock independently, any
@@ -60,6 +62,7 @@ function router(provider) {
     const currentEpoch = epochs.find((e) => e.status === "active") ?? null;
 
     return {
+      network: "evm",
       id: row.campaign_address,
       contract: row.campaign_address,
       name: erc20Name,
@@ -80,10 +83,67 @@ function router(provider) {
     };
   }
 
+  /// Solana counterpart of loadCampaignSummary above, against a decoded sso_solana Campaign
+  /// account. Same "no price/metadata source yet" gaps as shoRoutes.js's Solana path: no
+  /// mcap-equivalent is needed here (SSO never had one), but token name/symbol stay null.
+  async function loadSolanaCampaignSummary(row) {
+    if (!solanaConnection) throw new Error("SOLANA_RPC_URL is not configured on this API instance");
+    const campaignPubkey = new PublicKey(row.campaign_address);
+    const info = await solanaConnection.getAccountInfo(campaignPubkey);
+    if (!info) throw new Error(`Solana campaign account ${row.campaign_address} not found on-chain`);
+    const c = solanaAbis.decodeSsoCampaign(info.data);
+    const now = Math.floor(Date.now() / 1000);
+
+    const epochs = c.epochs.map((e) => {
+      let status;
+      if (!e.finalized) {
+        status = now < Number(e.endsAt) ? "active" : "pending";
+      } else if (now < Number(e.challengeWindowEnds)) {
+        status = "challenge_window";
+      } else {
+        status = e.totalClaimed > 0n ? "claimed" : "claimable";
+      }
+      return { index: e.epochIndex, bps: e.rewardBps, endsAt: Number(e.endsAt), status };
+    });
+    const currentEpoch = epochs.find((e) => e.status === "active") ?? null;
+    const isNative = c.rewardMint === solanaAbis.NATIVE_SOL_SENTINEL;
+    const createdAt = new Date(Number(c.createdAt) * 1000);
+
+    return {
+      network: "solana",
+      id: row.campaign_address,
+      contract: row.campaign_address,
+      name: null,
+      token: null,
+      keyword: c.keyword,
+      tokenAddress: c.token,
+      rewardToken: c.rewardMint,
+      rewardTokenSymbol: isNative ? "SOL" : null,
+      epochSeconds: solanaAbis.EPOCH_LENGTH_SECONDS[c.epochLength],
+      creator: c.creator,
+      locked: c.totalLocked.toString(),
+      leaderboardSize: c.leaderboardSize,
+      durationSeconds: Number(c.duration),
+      createdAt,
+      daysLeft: daysLeft(createdAt, c.duration),
+      currentEpochIndex: currentEpoch ? currentEpoch.index : null,
+      epochs,
+    };
+  }
+
+  async function loadSummarySafe(row) {
+    try {
+      return row.network === "solana" ? await loadSolanaCampaignSummary(row) : await loadCampaignSummary(row);
+    } catch (e) {
+      console.error(`[ssoRoutes] failed to load campaign ${row.campaign_address} (network=${row.network}):`, e.message);
+      return null;
+    }
+  }
+
   r.get("/sso/campaigns", async (req, res) => {
     try {
       const rows = await db.listCampaignsByFactory("sso");
-      const campaigns = await Promise.all(rows.map(loadCampaignSummary));
+      const campaigns = (await Promise.all(rows.map(loadSummarySafe))).filter(Boolean);
       res.json({ campaigns });
     } catch (e) {
       console.error("[GET /sso/campaigns]", e);
@@ -95,7 +155,7 @@ function router(provider) {
     try {
       const row = await db.getCampaign(req.params.address);
       if (!row || row.factory !== "sso") return res.status(404).json({ error: "campaign not found" });
-      const summary = await loadCampaignSummary(row);
+      const summary = row.network === "solana" ? await loadSolanaCampaignSummary(row) : await loadCampaignSummary(row);
       const leaderboard =
         summary.currentEpochIndex !== null ? await db.ssoLeaderboard(row.campaign_address, summary.currentEpochIndex, 10) : [];
       res.json({ ...summary, topLeaderboard: leaderboard });

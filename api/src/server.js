@@ -7,6 +7,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { buildProvider } = require("./provider");
+const { buildSolanaConnection } = require("./solanaProvider");
 const shoRoutes = require("./shoRoutes");
 const ssoRoutes = require("./ssoRoutes");
 const tokenRoutes = require("./tokenRoutes");
@@ -31,13 +32,19 @@ function requireEnv(name) {
 function main() {
   requireEnv("RPC_URL");
   const provider = buildProvider();
+  // Optional -- unset means this API stays EVM-only (see solanaProvider.js), same posture
+  // as the keeper's own SOLANA_RPC_URL.
+  const solanaConnection = buildSolanaConnection();
+  if (!solanaConnection) {
+    console.log("[api] SOLANA_RPC_URL not set -- Solana campaigns will fail to load individually, not block the API.");
+  }
   const app = express();
   app.use(cors());
 
   app.get("/health", (req, res) => res.json({ ok: true }));
 
-  app.use(shoRoutes.router(provider));
-  app.use(ssoRoutes.router(provider));
+  app.use(shoRoutes.router(provider, solanaConnection));
+  app.use(ssoRoutes.router(provider, solanaConnection));
   app.use(tokenRoutes.router(provider));
   app.use(walletRoutes.router(provider));
   app.use(claimRoutes.router());

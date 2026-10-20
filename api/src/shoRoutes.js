@@ -6,13 +6,15 @@
 "use strict";
 const express = require("express");
 const { ethers } = require("ethers");
+const { PublicKey } = require("@solana/web3.js");
 const db = require("./db");
 const { ERC20_ABI, SHO_CAMPAIGN_ABI, MILESTONE_USD_THRESHOLDS } = require("./abis");
+const solanaAbis = require("./solanaAbis");
 const { timeWeightedAveragePrice, TWAP_WINDOW_MS, daysLeft } = require("./shared");
 
 const TIER_LABELS = ["100K", "250K", "1M", "5M"];
 
-function router(provider) {
+function router(provider, solanaConnection) {
   const r = express.Router();
 
   async function tokenTwapMcap(tokenAddress) {
@@ -76,6 +78,7 @@ function router(provider) {
     const { rewardToken, rewardTokenSymbol } = await resolveRewardToken(rewardTokenAddress, row.token, erc20Symbol);
 
     return {
+      network: "evm",
       id: row.campaign_address,
       contract: row.campaign_address,
       name: erc20Name,
@@ -95,10 +98,79 @@ function router(provider) {
     };
   }
 
+  // Same status derivation as loadMilestones above, against a decoded sho_solana Campaign
+  // account instead of live contract calls (there's nothing to call — Solana has no "view
+  // function" distinct from reading account data, see contracts-solana/README.md).
+  function solanaMilestoneStatus(m, now) {
+    if (!m.reached) return null; // caller fills in 'active'/'pending' by position, same as EVM
+    if (now < Number(m.challengeWindowEnds)) return "challenge_window";
+    return m.totalClaimed > 0n ? "claimed" : "claimable";
+  }
+
+  /// A Solana campaign has no price-sampling source yet (no chosen Solana DEX indexer — see
+  /// keeper/src/solanaCampaignIndexer.js's header), so `mcap` is always null here, same
+  /// "not ready yet" semantics tokenTwapMcap already uses for a too-young EVM campaign. Token
+  /// name/symbol likewise has no metadata source yet (no SPL metadata lookup implemented),
+  /// so those stay null rather than guessing.
+  async function loadSolanaCampaignSummary(row) {
+    if (!solanaConnection) throw new Error("SOLANA_RPC_URL is not configured on this API instance");
+    const campaignPubkey = new PublicKey(row.campaign_address);
+    const info = await solanaConnection.getAccountInfo(campaignPubkey);
+    if (!info) throw new Error(`Solana campaign account ${row.campaign_address} not found on-chain`);
+    const c = solanaAbis.decodeShoCampaign(info.data);
+    const now = Math.floor(Date.now() / 1000);
+
+    let seenUnreached = false;
+    const milestones = c.milestones.map((m, i) => {
+      let status = solanaMilestoneStatus(m, now);
+      if (status === null) {
+        status = seenUnreached ? "pending" : "active";
+        seenUnreached = true;
+      }
+      return { index: i, tier: TIER_LABELS[m.tier], threshold: MILESTONE_USD_THRESHOLDS[m.tier], bps: m.rewardBps, status };
+    });
+
+    const isNative = c.rewardMint === solanaAbis.NATIVE_SOL_SENTINEL;
+    const createdAt = new Date(Number(c.createdAt) * 1000);
+
+    return {
+      network: "solana",
+      id: row.campaign_address,
+      contract: row.campaign_address,
+      name: null,
+      token: null,
+      tokenAddress: c.token,
+      rewardToken: c.rewardMint,
+      rewardTokenSymbol: isNative ? "SOL" : null,
+      creator: c.creator,
+      locked: c.totalLocked.toString(),
+      windowSeconds: solanaAbis.WINDOW_SECONDS[c.window],
+      leaderboardSize: c.leaderboardSize,
+      durationSeconds: Number(c.duration),
+      createdAt,
+      daysLeft: daysLeft(createdAt, c.duration),
+      mcap: null,
+      milestones,
+    };
+  }
+
+  /// Dispatches by row.network and never lets one bad campaign's live read take down the
+  /// whole list (a single Solana row failing because solanaConnection isn't configured, or
+  /// an EVM row failing because its RPC hiccupped, shouldn't 502 every other campaign) --
+  /// matches this file's existing per-field .catch(() => null) posture, just per-row.
+  async function loadSummarySafe(row) {
+    try {
+      return row.network === "solana" ? await loadSolanaCampaignSummary(row) : await loadCampaignSummary(row);
+    } catch (e) {
+      console.error(`[shoRoutes] failed to load campaign ${row.campaign_address} (network=${row.network}):`, e.message);
+      return null;
+    }
+  }
+
   r.get("/sho/campaigns", async (req, res) => {
     try {
       const rows = await db.listCampaignsByFactory("sho");
-      const campaigns = await Promise.all(rows.map(loadCampaignSummary));
+      const campaigns = (await Promise.all(rows.map(loadSummarySafe))).filter(Boolean);
       res.json({ campaigns });
     } catch (e) {
       console.error("[GET /sho/campaigns]", e);
@@ -110,7 +182,7 @@ function router(provider) {
     try {
       const row = await db.getCampaign(req.params.address);
       if (!row || row.factory !== "sho") return res.status(404).json({ error: "campaign not found" });
-      const summary = await loadCampaignSummary(row);
+      const summary = row.network === "solana" ? await loadSolanaCampaignSummary(row) : await loadCampaignSummary(row);
       const leaderboard = await db.shoLeaderboard(row.campaign_address, new Date(Date.now() - Number(row.window_seconds) * 1000), 10);
       res.json({ ...summary, topLeaderboard: leaderboard });
     } catch (e) {

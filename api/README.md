@@ -12,9 +12,12 @@ no state of its own beyond an ethers provider and a read-only Postgres connectio
 src/
   db.js          Read-only Postgres queries against the keeper's own database
   abis.js        Minimal ABI fragments — duplicated from keeper/src/abis/*.js, see its own header
+  solanaAbis.js  Hand-written Borsh decoders for sho_solana/sso_solana — duplicated from
+                 keeper/src/abis/solana.js, see "Solana support" below
   shared.js      Merkle tree + TWAP, ported (not reimplemented) from keeper/src/merkleTree.js
                  and twapOracle.js — see its own header for why this one can't be approximate
   provider.js    ethers provider with a request-appropriate RPC timeout
+  solanaProvider.js  Optional Solana Connection, see "Solana support" below
   shoRoutes.js   GET /sho/campaigns, /sho/campaigns/:address, /sho/campaigns/:address/leaderboard
   ssoRoutes.js   Same shape for SSO
   tokenRoutes.js GET /tokens/:address
@@ -56,6 +59,31 @@ mock's status set (`pending`/`active`/`claimable`/`claimed`) had no slot for thi
 adds `challenge_window` rather than folding it into `claimable`, since claiming during that
 window would revert on-chain anyway.
 
+## Solana support: read path only, nothing deployed yet
+
+`shoRoutes.js`/`ssoRoutes.js` now dispatch each campaign row by `row.network` ('evm' |
+'solana', set by `keeper/src/solanaCampaignIndexer.js`). A Solana row's summary comes from
+decoding its Campaign PDA directly (`solanaAbis.js`), not a contract call — Solana has no
+"view function" distinct from reading account data. Every response now carries a `network`
+field so the frontend can tell which chain a campaign lives on.
+
+**Real gaps on the Solana side**, same spirit as "Real gaps, not invented data" above:
+`name`/`token` (symbol) are always `null` (no SPL metadata lookup implemented), `mcap` is
+always `null` (no Solana price-sampling source exists yet, see
+`keeper/src/solanaCampaignIndexer.js`'s own header), and the leaderboard for a Solana
+campaign is always empty (no Solana trade indexing exists yet either — `db.shoLeaderboard`/
+`ssoLeaderboard` query `sho_trades`/`sso_posts`, which nothing ever writes Solana rows into).
+
+A single Solana campaign failing to load (`SOLANA_RPC_URL` unset, or
+`contracts-solana/`'s programs — [still undeployed anywhere](../contracts-solana/README.md)
+— simply not existing on whatever cluster is configured) is caught per-row and logged, not
+surfaced as a 502 for the whole `/sho/campaigns`/`/sso/campaigns` list — see each file's own
+`loadSummarySafe`.
+
+**Known accepted risk**: same `@solana/web3.js@1.95.3` / `bigint-buffer` advisory noted in
+`keeper/README.md`'s own Solana section — this API only decodes data from the RPC endpoint
+you configure in `SOLANA_RPC_URL`, not arbitrary user input.
+
 ## Running it
 
 ```bash
@@ -64,7 +92,8 @@ npm install
 npm start               # listens on PORT (default 3001)
 ```
 
-`npm test` runs the ported pure-logic tests (Merkle tree, TWAP, `daysLeft` — 9 total), no
+`npm test` runs the ported pure-logic tests (Merkle tree, TWAP, `daysLeft`, plus the Solana
+Borsh decoder round-trips — 13 total), no
 `.env`/DB/RPC needed. The route handlers themselves aren't unit-tested (they're thin glue over
 `db.js` and direct contract reads) — they were validated by hand against a real seeded
 Postgres instance and a fake RPC endpoint while building this: every route returns a clean
