@@ -1,0 +1,115 @@
+# Mainnet Launch Checklist
+
+Tracks everything still open before Diamond Hand (SHO + SSO) can launch on mainnet, across
+both supported networks (EVM and Solana). Pulled together from `docs/BACKEND_ROADMAP.md`'s
+existing Stage 3/4 gate, `contracts/README.md`'s own "Open items", and everything built
+this session for Solana support (`contracts-solana/`, `keeper/src/solanaCampaignIndexer.js`,
+`api/src/solanaAbis.js`, the `CreateWizard` network picker).
+
+Nothing here is checked off speculatively — a box is only ticked if it was actually
+verified (built, tested, or deployed), not just written.
+
+## Phase 0 — Already done
+
+- [x] SHO/SSO contracts written and unit-tested on EVM (`contracts/`, 33 tests)
+- [x] Deployed to Robinhood Chain **Testnet** (chain id 46630) — not mainnet
+- [x] Keeper Stage 1 (steps 1-4): trade indexing, TWAP oracle, milestone/epoch engine,
+      snapshot publisher, on-chain poster — validated live against testnet
+- [x] API Stage 2 read layer, frontend app + landing pages, deployed to Firebase Hosting
+- [x] SHO + SSO ported to Solana (`contracts-solana/`), `cargo check` passing — not built to
+      BPF/SBF, not deployed anywhere
+- [x] Frontend: network picker (EVM/Solana) + dual wallet connect in `CreateWizard`, with
+      real Solana campaign-creation transactions wired (untested against a live wallet)
+- [x] Keeper: Solana campaign discovery (`solanaCampaignIndexer.js`)
+- [x] API: Solana read path for `/sho/campaigns`, `/sso/campaigns` (`solanaAbis.js`)
+
+## Phase 1 — Solana: get to a working devnet deployment
+
+- [ ] Install `solana-cli` + `anchor-cli` (0.30.1) on a machine with real network access
+- [ ] `anchor build` both programs; fix anything `cargo check` couldn't catch (BPF-specific
+      compile errors, account-size miscalculations)
+- [ ] `anchor keys list`; replace the placeholder `declare_id!()` values in
+      `contracts-solana/programs/{sho_solana,sso_solana}/src/lib.rs` and `Anchor.toml`
+- [ ] Write `tests/sho.ts` / `tests/sso.ts` (happy-path SOL/SPL campaigns, fee split,
+      milestone/epoch reach + challenge-window correction + elapsed-window rejection,
+      valid/invalid/double claim, non-keeper rejection, SSO's epoch-not-yet-ended check)
+- [ ] `anchor test` against a local validator — first real end-to-end verification this
+      code has ever had
+- [ ] Deploy to devnet; call `initialize_config` for both programs
+- [ ] Update `SCP_CONFIG.SHO_SOLANA_PROGRAM_ID`/`SSO_SOLANA_PROGRAM_ID` (frontend),
+      `SOLANA_RPC_URL` + program ids (keeper, API) to point at the real devnet deployment
+- [ ] Create a real campaign through the `CreateWizard` against devnet; confirm it shows up
+      via the keeper indexer and the API's `/sho/campaigns`
+- [ ] Resolve the `bigint-buffer` advisory: upgrade to `@solana/web3.js` v2/v3 (breaking API
+      change, touches frontend + keeper + API) or formally accept the risk for launch
+
+## Phase 2 — Solana: backend parity with the EVM side
+
+- [ ] Choose a Solana DEX/trade source (Raydium? Jupiter? Pump.fun bonding curve?) — same
+      unresolved decision Pons.family already is for EVM, now needed twice
+- [ ] Build a Solana trade indexer + price/TWAP oracle equivalent (`keeper/src/tradeSources/`
+      has no Solana adapter yet)
+- [ ] Build a Solana on-chain poster (`post_milestone_root`/`post_epoch_root` automation) —
+      decide its signer model now, before shipping a single-EOA version that then has to be
+      migrated under live funds (see Phase 3)
+- [ ] Wire Discover/campaign-detail pages to actually render Solana campaigns (API already
+      returns them with `network: "solana"`; the frontend list/detail UI doesn't branch on
+      it yet)
+- [ ] Build the `claim_sol`/`claim_spl` claim UI (creation works; claiming doesn't exist in
+      the frontend yet for Solana)
+- [ ] SPL token metadata lookup (name/symbol) — currently always `null`, same honest gap as
+      `mcap`
+
+## Phase 3 — Security hardening (both networks) — Stage 3, currently NOT STARTED
+
+- [ ] **Third-party smart-contract audit — EVM.** Vendor/budget still undetermined
+      (`contracts/README.md`)
+- [ ] **Third-party audit — Solana.** A separate audit: different language, VM, and bug
+      classes (PDA validation, CPI signer checks, account reinitialization) than the EVM
+      audit covers. Budget for two, not one.
+- [ ] **Replace the single `KEEPER_PRIVATE_KEY` EOA** with the PRD's intended 3-of-5 Gnosis
+      Safe (EVM) and an equivalent Solana multisig (e.g. Squads) before any campaign with
+      real funds goes live on either chain
+- [ ] **Enforce a stablecoin allowlist on-chain** — today `rewardToken`/`reward_mint`
+      accepts any ERC20/SPL mint, no whitelist, on both chains
+- [ ] **Decide the unclaimed-reward policy**: deadline, sweep destination, claim UX for
+      funds nobody ever claims — currently locks forever by design, unresolved product
+      question on both chains
+- [ ] **Fix IPFS snapshot publishing** (`keeper/src/snapshotPublisher.js`) — has never
+      succeeded once (`UND_ERR_CONNECT_TIMEOUT` against `node.lighthouse.storage`)
+- [ ] Add CI that actually runs the test suites (`contracts/`, `contracts-solana/`,
+      `keeper/`, `api/`) on every PR — none of them run in CI today, only the Firebase
+      Hosting deploy does
+- [ ] Load/chaos-test the keeper pipeline (both chains) under realistic trade volume
+- [ ] Rotate every placeholder address (EVM `owner`/`treasury`/`keeper` are all still the
+      deployer's own address) to real, access-controlled accounts
+- [ ] Confirm OpenZeppelin 5.0.2 pin is still correct for the actual mainnet target chain's
+      opcode support (pinned below 5.1+ to avoid `MCOPY`/Cancun — verify before Stage 4)
+- [ ] Resolve Pons.family bonding-curve integration, or formally confirm "AMM from launch,
+      no bonding-curve phase" is the accepted v1 scope for mainnet
+- [ ] `cors()` is wide open in `api/` — fine for testnet, revisit before production
+
+## Phase 4 — Legal / product sign-off
+
+- [ ] Legal/regulatory review (jurisdiction-dependent — a reward-pool mechanism that pays
+      out based on trading/social activity needs counsel's sign-off before real funds)
+- [ ] Confirm `homepage-sho`/`commitment-protocol` marketing claims match what's actually
+      live (no overselling features not yet shipped — e.g. Solana isn't discoverable yet,
+      per Phase 2)
+- [ ] Incident-response plan: who gets paged on `alerts.js`'s missed-root alert (EVM) and
+      its still-nonexistent Solana equivalent (Phase 2)
+
+## Phase 5 — Mainnet deploy
+
+- [ ] EVM: deploy `SHOFactory`/`SSOFactory`/`Registry` to the real target mainnet
+      (Robinhood Chain mainnet, chain id 4663 per PRD §7, or wherever final scope lands)
+- [ ] Solana: deploy `sho_solana`/`sso_solana` to mainnet-beta
+- [ ] Point every `SCP_CONFIG`/`.env` at mainnet addresses, program ids, and RPC endpoints
+      (currently every config in this repo points at testnet/devnet/placeholders)
+- [ ] Announce — only after every box above this line is checked, not before
+
+---
+
+**How to use this file**: update it in the same commit as the work it tracks, so the
+checklist and the code never drift apart. A box gets checked only when its claim is true
+right now, not "should be true soon."
