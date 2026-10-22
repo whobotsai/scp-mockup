@@ -71,20 +71,34 @@ campaign's address is a pure function of its id, see that file's own header) and
 it with `abis/solana.js`'s hand-written Borsh layouts, writing into the same `campaigns`
 table the EVM indexer uses, tagged `network = 'solana'`.
 
-**Scope is deliberately campaign discovery only** — same "populate `campaigns`, nothing
-more" job `campaignIndexer.js`/`ssoCampaignIndexer.js` do for EVM. Not implemented for
-Solana campaigns at all yet:
-- Trade indexing / price sampling (`tradeIndexer.js`/`priceSampler.js`'s EVM-only) — needs
-  a chosen Solana DEX source first, the same unresolved gap Pons.family already is below.
+**Scope beyond discovery is partial.** `solanaPriceSampler.js` samples a Solana SHO
+campaign's tracked-token price via [DexScreener](https://docs.dexscreener.com/api/reference)'s
+public, unauthenticated token-pairs endpoint (`GET /latest/dex/tokens/:mint`) rather than
+reading a specific AMM's reserves the way `priceSampler.js` does for EVM — Solana has no
+single dominant pool venue the way the EVM side settled on Uniswap, so this lets
+DexScreener's own aggregation pick the venue instead of this codebase hardcoding one. The
+first time a pair is found for a mint it's auto-registered into `token_pools` (no manual
+`register-token-pool` step needed, unlike EVM). `tick()` in `index.js` calls this for every
+discovered Solana SHO campaign on each poll, feeding the same `price_samples` table/TWAP
+math (`twapOracle.js`) the EVM path uses — this part is chain-agnostic and was reused as-is.
+**Never actually called successfully** — this sandbox's egress policy blocks
+`api.dexscreener.com`; validated only against a mocked `fetch` (`test/solanaPriceSampler.test.js`).
+Verify the real response shape against a live call before trusting it with mainnet funds.
+
+Still not implemented for Solana campaigns at all:
+- Trade indexing (per-wallet net-buy volume for the SHO leaderboard) — the plan is Helius's
+  Enhanced Transactions API, not yet built.
 - The Milestone/Epoch Engine and On-chain Poster — a Solana campaign's milestones/epochs
   never advance or get a root posted, because nothing drives `post_milestone_root`/
   `post_epoch_root` for it yet.
 - Claiming — `scripts/claim-milestone.js` is EVM/ethers-only.
+- SSO epoch/root tracking entirely — `tickSolanaSso()` in `index.js` is a log-only
+  placeholder today.
 
 Enabling this (`SOLANA_RPC_URL` + `SHO_SOLANA_PROGRAM_ID`/`SSO_SOLANA_PROGRAM_ID` in
-`.env`) against real deployed programs will index campaigns into the DB, but they'll sit
-there with no further progress — don't point this at a program with real funds expecting
-milestones to resolve on their own.
+`.env`) against real deployed programs will index campaigns into the DB and sample prices
+for SHO ones, but milestones/epochs won't advance and claims won't work — don't point this
+at a program with real funds expecting them to resolve on their own.
 
 **Known accepted risk**: `@solana/web3.js@1.95.3` pulls in `bigint-buffer`, which
 `npm audit` flags as a high-severity buffer-overflow advisory affecting every 1.x release

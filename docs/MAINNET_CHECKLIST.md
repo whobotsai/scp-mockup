@@ -54,11 +54,18 @@ verified (built, tested, or deployed), not just written.
 - [x] *(found along the way, not originally listed)* Reward-amount decimals were hardcoded
       to 18 everywhere — would have badly misrepresented native SOL (9 decimals). Both APIs
       now return a real `rewardDecimals`, threaded through every frontend display call site
-- [ ] Choose a Solana DEX/trade source (Raydium? Jupiter? Pump.fun bonding curve?) — same
-      unresolved decision Pons.family already is for EVM, now needed twice. **Blocks the
-      three items below.**
-- [ ] Build a Solana trade indexer + price/TWAP oracle equivalent (`keeper/src/tradeSources/`
-      has no Solana adapter yet)
+- [x] Choose a Solana mcap/price source — **DexScreener** (public, unauthenticated
+      `/latest/dex/tokens/:mint`), picked over indexing a specific AMM's reserves directly
+      since Solana has no single dominant venue the way EVM settled on Uniswap
+- [x] Solana price/TWAP sampling — `keeper/src/solanaPriceSampler.js`, wired into `tick()`
+      for discovered Solana SHO campaigns, reusing `twapOracle.js` as-is (chain-agnostic).
+      Auto-registers the pool into `token_pools` on first sample (no manual step, unlike
+      EVM's `register-token-pool.js`). Unit-tested only (mocked fetch) — this sandbox's
+      egress policy blocks `api.dexscreener.com`, never called against the real API
+- [ ] Choose + build a Solana trade-attribution source for the SHO net-buy-volume
+      leaderboard (DexScreener only exposes aggregate pair stats, not per-wallet data) —
+      plan is **Helius Enhanced Transactions API**, not yet built. **Blocks the two items
+      below.**
 - [ ] Build a Solana on-chain poster (`post_milestone_root`/`post_epoch_root` automation) —
       decide its signer model now, before shipping a single-EOA version that then has to be
       migrated under live funds (see Phase 3)

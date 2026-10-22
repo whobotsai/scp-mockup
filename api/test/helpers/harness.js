@@ -4,42 +4,28 @@
 "use strict";
 let passed = 0;
 let failed = 0;
-// Holds every async test's promise so summary() can await them all before reporting --
-// without this, an async `fn` (one that returns a thenable) would report "ok" immediately
-// (fn() throwing nothing synchronously), with its actual assertions/rejections only
-// surfacing later as an unhandled rejection, never counted as a failure here. Sync tests
-// (the overwhelming majority in this project) are unaffected: fn() for a sync function
-// returns undefined, not a thenable, so they're still counted synchronously exactly as before.
-const pending = [];
+// Chains every test (sync or async) through one running promise so each fully completes --
+// including any `finally` cleanup inside it -- before the next one starts. An earlier version
+// fired each async test immediately without awaiting it before the next `test()` call ran;
+// that's fine for independent tests, but any two that monkey-patch shared module state (e.g.
+// a connection object, global.fetch) with a per-test `finally`-restore would race and clobber
+// each other's mocks mid-flight (see keeper/test/solanaPriceSampler.test.js for the bug this
+// fixes, found there first). Sequential chaining in file order removes the race. Kept in
+// lockstep with ../../keeper/test/helpers/harness.js's identical fix.
+let chain = Promise.resolve();
 
 function test(name, fn) {
-  let result;
-  try {
-    result = fn();
-  } catch (e) {
-    failed++;
-    console.log(`  FAIL - ${name}`);
-    console.log(`    ${e.message}`);
-    return;
-  }
-  if (result && typeof result.then === "function") {
-    pending.push(
-      result.then(
-        () => {
-          passed++;
-          console.log(`  ok - ${name}`);
-        },
-        (e) => {
-          failed++;
-          console.log(`  FAIL - ${name}`);
-          console.log(`    ${e.message}`);
-        }
-      )
-    );
-    return;
-  }
-  passed++;
-  console.log(`  ok - ${name}`);
+  chain = chain.then(async () => {
+    try {
+      await fn();
+      passed++;
+      console.log(`  ok - ${name}`);
+    } catch (e) {
+      failed++;
+      console.log(`  FAIL - ${name}`);
+      console.log(`    ${e.message}`);
+    }
+  });
 }
 
 // BigInt has no native JSON representation -- stringify it explicitly (as "123n") rather
@@ -56,11 +42,11 @@ function assertEqual(actual, expected, msg) {
 }
 
 // async, but existing callers' plain `summary();` (no await) still works correctly --
-// calling an async function runs its body immediately rather than lazily, so `pending`'s
-// promises still get awaited and counted before the final log/exit, whether or not the call
+// calling an async function runs its body immediately rather than lazily, so `chain`
+// still gets awaited and counted before the final log/exit, whether or not the call
 // site awaits the returned promise.
 async function summary() {
-  await Promise.all(pending);
+  await chain;
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);
 }

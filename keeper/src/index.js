@@ -16,6 +16,7 @@ const { pollNewSolanaCampaigns } = require("./solanaCampaignIndexer");
 const { pollTradesForCampaign } = require("./tradeIndexer");
 const { netBuyVolumeForCampaign } = require("./volumeAggregator");
 const { samplePrice } = require("./priceSampler");
+const { sampleSolanaPrice } = require("./solanaPriceSampler");
 const { checkMilestones } = require("./milestoneEngine");
 const { pollNewSsoCampaigns } = require("./ssoCampaignIndexer");
 const { pollNewRegistrations } = require("./registrationIndexer");
@@ -45,6 +46,23 @@ async function tickSho(provider, c) {
     await samplePrice(provider, c.token, poolConfig);
     await checkMilestones(provider, c);
   }
+}
+
+// Solana SHO: only price sampling exists so far (trade indexing, milestone posting, and
+// claim-proof generation are all still open -- see docs/MAINNET_CHECKLIST.md Phase 2). This
+// at least keeps a price/TWAP history accumulating for any discovered Solana SHO campaign's
+// tracked token from the moment it's indexed, rather than starting that clock only once the
+// rest of the pipeline exists.
+async function tickSolanaSho(c) {
+  await sampleSolanaPrice(c.token);
+}
+
+// Solana SSO: nothing implemented yet beyond discovery (no epoch/root/claim mechanics ported
+// to the keeper side) -- a log line here is a deliberate placeholder, not a bug, so a
+// discovered Solana SSO campaign isn't silently ignored in the logs while the rest of the
+// pipeline catches up.
+async function tickSolanaSso(c) {
+  console.log(`[keeper] Solana SSO campaign ${c.campaign_address}: epoch/root tracking not implemented yet -- skipping.`);
 }
 
 async function tickSso(provider, c) {
@@ -84,12 +102,26 @@ async function tick(provider, keeperWallet, publishIntervalMs, solanaConnection)
     await pollNewSolanaCampaigns(solanaConnection, process.env.SSO_SOLANA_PROGRAM_ID, "sso");
   }
 
+  // Each campaign's tick is wrapped in its own try/catch: without this, one campaign
+  // throwing (e.g. a Solana campaign's base58 address reaching an EVM-only code path) would
+  // abort the whole loop, skipping every later campaign plus the snapshot/root-posting/alert
+  // steps below for that entire tick cycle.
   const campaigns = await db.listCampaigns();
   for (const c of campaigns) {
-    if (c.factory === "sso") {
-      await tickSso(provider, c);
-    } else {
-      await tickSho(provider, c);
+    try {
+      if (c.network === "solana") {
+        if (c.factory === "sso") {
+          await tickSolanaSso(c);
+        } else {
+          await tickSolanaSho(c);
+        }
+      } else if (c.factory === "sso") {
+        await tickSso(provider, c);
+      } else {
+        await tickSho(provider, c);
+      }
+    } catch (e) {
+      console.error(`[keeper] tick failed for campaign ${c.campaign_address} (${c.network || "evm"}/${c.factory}):`, e);
     }
   }
 
