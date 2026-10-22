@@ -114,6 +114,64 @@ function decodeSsoCampaign(data) {
 /// plays for `rewardToken` (compared via `ethers.ZeroAddress` in shoRoutes.js/ssoRoutes.js).
 const NATIVE_SOL_SENTINEL = "11111111111111111111111111111111";
 
+// ===================== SPL mint / Metaplex metadata (for display only) =====================
+// Neither sho_solana nor sso_solana read any of this on-chain -- it's purely so this API can
+// show a real name/symbol/decimals instead of the always-null placeholders a first pass
+// shipped with. SPL Token's Mint layout (decimals at a fixed byte offset) and the Metaplex
+// Token Metadata PDA/account layout are both stable, widely-used standards independent of
+// this project's own programs -- not something contracts-solana/ defines or could change.
+
+const TOKEN_METADATA_PROGRAM_ID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
+
+/// SPL Token's Mint account layout: mint_authority COption<Pubkey> (4-byte tag + 32-byte
+/// value = 36) + supply u64 (8) + decimals u8 at a fixed offset of 44 -- no discriminator
+/// prefix (unlike Anchor accounts), since the legacy SPL Token program predates Anchor.
+function decodeMintDecimals(data) {
+  return data.readUInt8(44);
+}
+
+function metadataPda(mint) {
+  const programId = new PublicKey(TOKEN_METADATA_PROGRAM_ID);
+  const [addr] = PublicKey.findProgramAddressSync(
+    [Buffer.from("metadata"), programId.toBuffer(), mint.toBuffer()],
+    programId
+  );
+  return addr;
+}
+
+/// Metaplex's Metadata account: key(1) + update_authority(32) + mint(32), then `data`'s
+/// name/symbol/uri as Borsh strings (u32 length prefix + utf8 bytes) -- name/symbol are
+/// historically padded with trailing null bytes to a fixed max length (32/10), trimmed off
+/// here. Only decodes the two fields this API actually displays.
+function decodeTokenMetadataNameSymbol(data) {
+  let o = 1 + 32 + 32;
+  const nameLen = data.readUInt32LE(o); o += 4;
+  const name = data.subarray(o, o + nameLen).toString("utf8").replace(/\0/g, "").trim();
+  o += nameLen;
+  const symbolLen = data.readUInt32LE(o); o += 4;
+  const symbol = data.subarray(o, o + symbolLen).toString("utf8").replace(/\0/g, "").trim();
+  return { name: name || null, symbol: symbol || null };
+}
+
+/// Best-effort: a mint with no Metaplex metadata account (or one this fails to decode) just
+/// comes back with name/symbol null, same "honest gap, not invented" posture as the rest of
+/// this API -- never throws for that reason, only for a genuinely unreachable connection.
+async function fetchSplTokenInfo(connection, mint) {
+  const mintInfo = await connection.getAccountInfo(mint);
+  const decimals = mintInfo ? decodeMintDecimals(mintInfo.data) : null;
+
+  let name = null;
+  let symbol = null;
+  try {
+    const metaInfo = await connection.getAccountInfo(metadataPda(mint));
+    if (metaInfo) ({ name, symbol } = decodeTokenMetadataNameSymbol(metaInfo.data));
+  } catch (e) {
+    // Malformed/unexpected metadata layout -- leave name/symbol null rather than fail the
+    // whole campaign summary over a cosmetic field.
+  }
+  return { decimals, name, symbol };
+}
+
 module.exports = {
   WINDOW_SECONDS: WINDOW_OR_EPOCH_SECONDS,
   EPOCH_LENGTH_SECONDS: WINDOW_OR_EPOCH_SECONDS,
@@ -122,4 +180,8 @@ module.exports = {
   decodeConfig,
   decodeShoCampaign,
   decodeSsoCampaign,
+  decodeMintDecimals,
+  decodeTokenMetadataNameSymbol,
+  metadataPda,
+  fetchSplTokenInfo,
 };

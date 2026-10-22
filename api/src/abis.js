@@ -10,6 +10,7 @@ const ERC20_ABI = [
   "function name() view returns (string)",
   "function symbol() view returns (string)",
   "function totalSupply() view returns (uint256)",
+  "function decimals() view returns (uint8)",
 ];
 
 const SHO_CAMPAIGN_ABI = [

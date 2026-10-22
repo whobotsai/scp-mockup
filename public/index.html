@@ -880,6 +880,12 @@ function shortAddr(addr){
 }
 function explorerAddressUrl(addr){ return `${SCP_CONFIG.EXPLORER_URL}/address/${addr}`; }
 function explorerTxUrl(hash){ return `${SCP_CONFIG.EXPLORER_URL}/tx/${hash}`; }
+// network-aware versions -- a campaign's own `network` ('evm' | 'solana') decides which
+// chain's explorer a link should point at, since the two EXPLORER_URL bases aren't
+// interchangeable (see solanaExplorerAddressUrl/solanaExplorerTxUrl in the Solana section
+// below for the Solana half these delegate to).
+function campaignExplorerAddressUrl(network, addr){ return network==='solana' ? solanaExplorerAddressUrl(addr) : explorerAddressUrl(addr); }
+function campaignExplorerTxUrl(network, hash){ return network==='solana' ? solanaExplorerTxUrl(hash) : explorerTxUrl(hash); }
 
 // Best-effort human message out of an ethers/JSON-RPC error -- these nest the actually useful
 // string a few different ways depending on where the failure happened (wallet rejection vs.
@@ -985,6 +991,7 @@ function secondsToDurationLabel(s){ return Math.round(s/86400)+'D'; }
 // Maps a shoRoutes.js campaign summary onto the shape CampaignCard/SHODetail already render.
 function normalizeShoCampaign(c){
   return {
+    network: c.network || 'evm', // 'evm' | 'solana' -- see contracts-solana/README.md
     id: c.id,
     token: c.token || shortAddr(c.tokenAddress),
     name: c.name || c.token || shortAddr(c.tokenAddress),
@@ -992,7 +999,8 @@ function normalizeShoCampaign(c){
     rewardTokenAddress: c.rewardToken,
     creator: c.creator,
     contract: c.id,
-    locked: c.locked, // raw units (18 decimals assumed, same as ../api/src/shoRoutes.js)
+    locked: c.locked, // raw units -- see rewardDecimals below for how to actually scale this
+    rewardDecimals: c.rewardDecimals ?? 18,
     denom: c.rewardTokenSymbol || c.token,
     window: secondsToWindowLabel(c.windowSeconds),
     size: c.leaderboardSize,
@@ -1006,6 +1014,7 @@ function normalizeShoCampaign(c){
 }
 function normalizeSsoCampaign(c){
   return {
+    network: c.network || 'evm',
     id: c.id,
     token: c.token || shortAddr(c.tokenAddress),
     name: c.name || c.token || shortAddr(c.tokenAddress),
@@ -1015,6 +1024,7 @@ function normalizeSsoCampaign(c){
     contract: c.id,
     keyword: c.keyword,
     locked: c.locked,
+    rewardDecimals: c.rewardDecimals ?? 18,
     denom: c.rewardTokenSymbol || c.token,
     epochLen: secondsToWindowLabel(c.epochSeconds),
     size: c.leaderboardSize,
@@ -1053,12 +1063,16 @@ function fmtNum(n){
 }
 function fmtUSD(n){ return '$'+fmtNum(n); }
 // API amounts (c.locked, wallet standings/claims amounts) are raw on-chain integers as
-// strings, 18 decimals assumed throughout this project (same assumption api/src/shoRoutes.js
-// itself makes for totalSupply -- see its tokenTwapMcap). Converts to a plain JS number for
-// display via fmtNum/fmtUSD; fine at this scale, not used for anything that computes a claim.
-function fmtTokenAmount(raw){
+// strings. `decimals` defaults to 18 (every call site that doesn't pass one is either an
+// already-human-scaled score, like a leaderboard's net-buy volume, or a pre-Solana EVM
+// amount where 18 was usually right anyway) -- but a campaign's actual locked/reward amount
+// should pass its own rewardDecimals (see shoRoutes.js/ssoRoutes.js's resolveRewardToken),
+// since native SOL is 9 decimals and a USDC-denominated campaign is 6, not 18. Converts to a
+// plain JS number for display via fmtNum/fmtUSD; fine at this scale, not used for anything
+// that computes a claim.
+function fmtTokenAmount(raw, decimals){
   if(raw==null) return 0;
-  try { return Number(window.ethers.formatUnits(raw, 18)); } catch(e){ return 0; }
+  try { return Number(window.ethers.formatUnits(raw, decimals ?? 18)); } catch(e){ return 0; }
 }
 function pctToNext(mcap, tiers){
   const next = tiers.find(t=>t.value>mcap) || tiers[tiers.length-1];
@@ -1387,11 +1401,14 @@ function CampaignCard({c, kind, onOpen}){
           <div className="ticker">{c.token}</div>
           <div className="camp-meta">{c.name}{c.creatorType ? ` · by ${c.creatorType}` : ''}</div>
         </div>
-        <Tag kind={isSHO?'sho':'sso'} icon={isSHO?IcoTrendUp:IcoMegaphone}>{isSHO?'SHO':'SSO'}</Tag>
+        <div style={{display:'flex',gap:6,alignItems:'center'}}>
+          {c.network==='solana' && <Tag kind="neutral">Solana</Tag>}
+          <Tag kind={isSHO?'sho':'sso'} icon={isSHO?IcoTrendUp:IcoMegaphone}>{isSHO?'SHO':'SSO'}</Tag>
+        </div>
       </div>
       {isSHO ? (
         <>
-          <div className="camp-row"><span>Locked</span><b className="mono">{fmtNum(fmtTokenAmount(c.locked))} {c.denom==c.token?c.token:c.denom}</b></div>
+          <div className="camp-row"><span>Locked</span><b className="mono">{fmtNum(fmtTokenAmount(c.locked, c.rewardDecimals))} {c.denom==c.token?c.token:c.denom}</b></div>
           <div className="camp-row"><span>Mcap</span><b className="mono">{c.mcap==null ? 'TWAP pending' : fmtUSD(c.mcap)}</b></div>
           <Meter pct={pct}/>
           <div className="camp-row"><span>Window {c.window} &middot; Top {c.size}</span><span>{c.daysLeft}d left</span></div>
@@ -1399,7 +1416,7 @@ function CampaignCard({c, kind, onOpen}){
       ) : (
         <>
           <div className="camp-row"><span>Keyword</span><b className="mono">{c.keyword}</b></div>
-          <div className="camp-row"><span>Locked</span><b className="mono">{fmtNum(fmtTokenAmount(c.locked))} {c.denom==c.token?c.token:c.denom}</b></div>
+          <div className="camp-row"><span>Locked</span><b className="mono">{fmtNum(fmtTokenAmount(c.locked, c.rewardDecimals))} {c.denom==c.token?c.token:c.denom}</b></div>
           <Meter pct={pct}/>
           <div className="camp-row"><span>Epoch {c.epochLen} &middot; Top {c.size}</span><span>{reached}/{total} epochs run</span></div>
         </>
@@ -1813,7 +1830,7 @@ function buildShareCardData(kind, role, c, standing){
   const mutedBorder = isSho ? '#2C3620' : '#2A3348';
   const url = shareCardUrl(kind, c.id);
   const shortUrl = url.replace(/^https?:\/\//, '').replace(/^www\./, '');
-  const lockedAmount = `${fmtNum(fmtTokenAmount(c.locked))} ${c.denom}`;
+  const lockedAmount = `${fmtNum(fmtTokenAmount(c.locked, c.rewardDecimals))} ${c.denom}`;
   const railLabels = ['Lock', isSho ? 'Milestone' : 'Epoch Close', 'Payout'];
   const base = { accent, badgeBg, badgeText, mutedBorder, badgeLabel: isSho ? 'SHO' : 'SSO', railLabels, footerUrl: shortUrl };
 
@@ -1834,7 +1851,7 @@ function buildShareCardData(kind, role, c, standing){
       statusRight: {type: 'dot', text: 'Campaign live'},
       eyebrow: `${c.token} · reward pool locked`,
       keywordChip: isSho ? null : c.keyword,
-      hero: {type: 'amount', amount: fmtNum(fmtTokenAmount(c.locked)), denom: c.denom},
+      hero: {type: 'amount', amount: fmtNum(fmtTokenAmount(c.locked, c.rewardDecimals)), denom: c.denom},
       chips,
       footerLine1: null,
       caption: `${c.token} ${isSho ? 'SHO' : 'SSO'} campaign is live — ${lockedAmount} locked for the community. ${url}`,
@@ -1938,7 +1955,10 @@ function SHODetail({id, go, user, notify}){
   const [refreshTick, setRefreshTick] = useState(0);
   const {loading, data, error} = useApiFetch(`/sho/campaigns/${id}`, [id, refreshTick]);
   const c = useMemo(()=> data ? normalizeShoCampaign(data) : null, [data]);
-  const tokenProfile = useApiFetch(c ? `/tokens/${c.tokenAddress}` : null, [c && c.tokenAddress]);
+  // No /tokens/:address lookup for a Solana campaign -- that endpoint is EVM-only
+  // (ethers.isAddress rejects a base58 mint and returns a clean 400), so skip the guaranteed-
+  // to-fail request rather than let useApiFetch log a noisy failure every load.
+  const tokenProfile = useApiFetch(c && c.network!=='solana' ? `/tokens/${c.tokenAddress}` : null, [c && c.tokenAddress, c && c.network]);
   const standings = useApiFetch(user.wallet ? `/wallets/${user.wallet}/standings` : null, [user.wallet, refreshTick]);
   const claims = useApiFetch(user.wallet ? `/wallets/${user.wallet}/claims` : null, [user.wallet, refreshTick]);
   const [claiming, setClaiming] = useState(null);
@@ -1951,11 +1971,16 @@ function SHODetail({id, go, user, notify}){
   const {next, pct} = pctToNext(c.mcap||0, tiers);
   const allTiersReached = c.mcap!=null && c.mcap >= tiers[tiers.length-1].value;
   const profile = tokenProfile.data;
+  // Solana standings/claims never populate: /wallets/:address/{standings,claims} are keyed by
+  // an EVM wallet address (user.wallet), and there's no Solana-wallet equivalent endpoint yet
+  // (see docs/MAINNET_CHECKLIST.md's Phase 2) -- myStanding/myClaims just stay empty for a
+  // Solana campaign, which is honest (not wrong), not a crash.
   const myStanding = standings.data ? standings.data.sho.find(s=>s.campaignAddress.toLowerCase()===c.id.toLowerCase()) : null;
   const myClaims = claims.data ? claims.data.claims.filter(cl=>cl.factory==='sho' && cl.campaignAddress.toLowerCase()===c.id.toLowerCase()) : [];
   const anyOpen = c.milestones.some(m=>m.status==='pending'||m.status==='active');
 
   const doClaim = async (m)=>{
+    if(c.network==='solana'){ notify('Claiming a Solana campaign reward isn\'t available yet -- see docs/MAINNET_CHECKLIST.md.'); return; }
     if(!user.wallet){ notify('Connect a wallet first to claim.'); return; }
     const mine = myClaims.find(cl=>cl.index===m.index);
     if(!mine){ notify("You're not on this milestone's leaderboard snapshot -- nothing to claim."); return; }
@@ -1991,6 +2016,7 @@ function SHODetail({id, go, user, notify}){
             {user.wallet && c.creator && user.wallet.toLowerCase()===c.creator.toLowerCase() && (
               <Btn kind="outline" size="sm" icon={IcoShare} onClick={()=>setShareRole('creator')}>Share</Btn>
             )}
+            {c.network==='solana' && <Tag kind="neutral">Solana</Tag>}
             <Tag kind="sho">{anyOpen ? 'Active' : 'Completed'}</Tag>
           </div>
         </div>
@@ -2022,9 +2048,11 @@ function SHODetail({id, go, user, notify}){
                       </div>
                     </div>
                     {m.status==='claimable' && walletStatus!=='claimed' && (
-                      mine
-                        ? <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===m.index} onClick={()=>doClaim(m)}>{claiming===m.index?'Claiming…':'Claim'}</Btn>
-                        : (user.wallet ? <Tag kind="neutral">Not eligible</Tag> : <Btn size="sm" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>)
+                      c.network==='solana'
+                        ? <Tag kind="neutral">Claiming not available yet</Tag>
+                        : (mine
+                            ? <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===m.index} onClick={()=>doClaim(m)}>{claiming===m.index?'Claiming…':'Claim'}</Btn>
+                            : (user.wallet ? <Tag kind="neutral">Not eligible</Tag> : <Btn size="sm" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>))
                     )}
                     {walletStatus==='claimed' && <Tag kind="sho" icon={IcoCheckCirc}>Claimed</Tag>}
                   </div>
@@ -2076,7 +2104,7 @@ function SHODetail({id, go, user, notify}){
               <div className="kv"><span className="k">Current mcap</span><span className="v">{c.mcap==null ? 'TWAP pending' : fmtUSD(c.mcap)}</span></div>
               <div className="kv"><span className="k">ATH mcap</span><span className="v" title="Not tracked yet -- no historical mcap index exists">—</span></div>
               <div className="kv"><span className="k"><IcoUsers size={13}/> Holders</span><span className="v">{(profile && profile.holders!=null) ? profile.holders.toLocaleString() : '—'}</span></div>
-              <div className="kv"><span className="k">Contract</span><span className="v mono" style={{fontSize:11}}><a href={explorerAddressUrl(c.tokenAddress)} target="_blank" rel="noopener noreferrer">{shortAddr(c.tokenAddress)}</a></span></div>
+              <div className="kv"><span className="k">Contract</span><span className="v mono" style={{fontSize:11}}><a href={campaignExplorerAddressUrl(c.network, c.tokenAddress)} target="_blank" rel="noopener noreferrer">{shortAddr(c.tokenAddress)}</a></span></div>
             </div>
 
             <div className="panel">
@@ -2103,14 +2131,14 @@ function SHODetail({id, go, user, notify}){
             </div>
             <div className="panel">
               <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoInfo size={13}/>Campaign details</div>
-              <div className="kv"><span className="k">Total locked</span><span className="v">{fmtNum(fmtTokenAmount(c.locked))} {c.denom}</span></div>
+              <div className="kv"><span className="k">Total locked</span><span className="v">{fmtNum(fmtTokenAmount(c.locked, c.rewardDecimals))} {c.denom}</span></div>
               <div className="kv"><span className="k">Reward denomination</span><span className="v">{c.denom}</span></div>
               <div className="kv"><span className="k">Leaderboard window</span><span className="v">{c.window}</span></div>
               <div className="kv"><span className="k">Leaderboard size</span><span className="v">Top {c.size}</span></div>
               <div className="kv"><span className="k">Campaign duration</span><span className="v">{c.duration}</span></div>
               <div className="kv"><span className="k">Time remaining</span><span className="v">{c.daysLeft}d</span></div>
               <div className="kv"><span className="k">Protocol fee</span><span className="v">0.5% (taken at open)</span></div>
-              <div className="kv"><span className="k">Campaign contract</span><span className="v mono" style={{fontSize:11}}><a href={explorerAddressUrl(c.id)} target="_blank" rel="noopener noreferrer">{shortAddr(c.id)}</a></span></div>
+              <div className="kv"><span className="k">Campaign contract</span><span className="v mono" style={{fontSize:11}}><a href={campaignExplorerAddressUrl(c.network, c.id)} target="_blank" rel="noopener noreferrer">{shortAddr(c.id)}</a></span></div>
             </div>
           </div>
         </div>
@@ -2126,7 +2154,8 @@ function SSODetail({id, go, user, notify}){
   const [refreshTick, setRefreshTick] = useState(0);
   const {loading, data, error} = useApiFetch(`/sso/campaigns/${id}`, [id, refreshTick]);
   const c = useMemo(()=> data ? normalizeSsoCampaign(data) : null, [data]);
-  const tokenProfile = useApiFetch(c ? `/tokens/${c.tokenAddress}` : null, [c && c.tokenAddress]);
+  // See SHODetail's identical guard -- /tokens/:address is EVM-only.
+  const tokenProfile = useApiFetch(c && c.network!=='solana' ? `/tokens/${c.tokenAddress}` : null, [c && c.tokenAddress, c && c.network]);
   const standings = useApiFetch(user.wallet ? `/wallets/${user.wallet}/standings` : null, [user.wallet, refreshTick]);
   const claims = useApiFetch(user.wallet ? `/wallets/${user.wallet}/claims` : null, [user.wallet, refreshTick]);
   const [claiming, setClaiming] = useState(null);
@@ -2139,10 +2168,12 @@ function SSODetail({id, go, user, notify}){
   const epochLabel = activeEpoch ? `Epoch ${activeEpoch.n} of ${c.epochs.length}`
     : c.epochs.every(e=>e.status==='pending') ? 'Not started yet' : 'Between epochs';
   const profile = tokenProfile.data;
+  // See SHODetail's identical note -- no Solana-wallet-keyed standings/claims endpoint yet.
   const myStanding = standings.data ? standings.data.sso.find(s=>s.campaignAddress.toLowerCase()===c.id.toLowerCase()) : null;
   const myClaims = claims.data ? claims.data.claims.filter(cl=>cl.factory==='sso' && cl.campaignAddress.toLowerCase()===c.id.toLowerCase()) : [];
 
   const doClaim = async (e)=>{
+    if(c.network==='solana'){ notify('Claiming a Solana campaign reward isn\'t available yet -- see docs/MAINNET_CHECKLIST.md.'); return; }
     if(!user.wallet){ notify('Connect a wallet first to claim.'); return; }
     const mine = myClaims.find(cl=>cl.index===e.index);
     if(!mine){ notify("You're not on this epoch's leaderboard snapshot -- nothing to claim."); return; }
@@ -2178,6 +2209,7 @@ function SSODetail({id, go, user, notify}){
             {user.wallet && c.creator && user.wallet.toLowerCase()===c.creator.toLowerCase() && (
               <Btn kind="outline" size="sm" icon={IcoShare} onClick={()=>setShareRole('creator')}>Share</Btn>
             )}
+            {c.network==='solana' && <Tag kind="neutral">Solana</Tag>}
             <Tag kind="sso" icon={IcoCalendar}>{epochLabel}</Tag>
           </div>
         </div>
@@ -2216,9 +2248,11 @@ function SSODetail({id, go, user, notify}){
                       </div>
                     </div>
                     {e.status==='claimable' && walletStatus!=='claimed' && (
-                      mine
-                        ? <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===e.index} onClick={()=>doClaim(e)}>{claiming===e.index?'Claiming…':'Claim'}</Btn>
-                        : (user.wallet ? <Tag kind="neutral">Not eligible</Tag> : <Btn size="sm" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>)
+                      c.network==='solana'
+                        ? <Tag kind="neutral">Claiming not available yet</Tag>
+                        : (mine
+                            ? <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===e.index} onClick={()=>doClaim(e)}>{claiming===e.index?'Claiming…':'Claim'}</Btn>
+                            : (user.wallet ? <Tag kind="neutral">Not eligible</Tag> : <Btn size="sm" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>))
                     )}
                     {walletStatus==='claimed' && <Tag kind="sso" icon={IcoCheckCirc}>Claimed</Tag>}
                   </div>
@@ -2270,7 +2304,7 @@ function SSODetail({id, go, user, notify}){
               <div className="kv"><span className="k">Current mcap</span><span className="v">{(profile && profile.mcap!=null) ? fmtUSD(profile.mcap) : 'TWAP pending'}</span></div>
               <div className="kv"><span className="k">ATH mcap</span><span className="v" title="Not tracked yet -- no historical mcap index exists">—</span></div>
               <div className="kv"><span className="k"><IcoUsers size={13}/> Holders</span><span className="v">{(profile && profile.holders!=null) ? profile.holders.toLocaleString() : '—'}</span></div>
-              <div className="kv"><span className="k">Contract</span><span className="v mono" style={{fontSize:11}}><a href={explorerAddressUrl(c.tokenAddress)} target="_blank" rel="noopener noreferrer">{shortAddr(c.tokenAddress)}</a></span></div>
+              <div className="kv"><span className="k">Contract</span><span className="v mono" style={{fontSize:11}}><a href={campaignExplorerAddressUrl(c.network, c.tokenAddress)} target="_blank" rel="noopener noreferrer">{shortAddr(c.tokenAddress)}</a></span></div>
             </div>
             <div className="panel">
               <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoX size={13}/>Your position</div>
@@ -2296,14 +2330,14 @@ function SSODetail({id, go, user, notify}){
             </div>
             <div className="panel">
               <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoInfo size={13}/>Campaign details</div>
-              <div className="kv"><span className="k">Total locked</span><span className="v">{fmtNum(fmtTokenAmount(c.locked))} {c.denom}</span></div>
+              <div className="kv"><span className="k">Total locked</span><span className="v">{fmtNum(fmtTokenAmount(c.locked, c.rewardDecimals))} {c.denom}</span></div>
               <div className="kv"><span className="k">Reward denomination</span><span className="v">{c.denom}</span></div>
               <div className="kv"><span className="k">Epoch length</span><span className="v">{c.epochLen}</span></div>
               <div className="kv"><span className="k">Leaderboard size</span><span className="v">Top {c.size}</span></div>
               <div className="kv"><span className="k">Campaign duration</span><span className="v">{c.duration}</span></div>
               <div className="kv"><span className="k">Min. account age</span><span className="v">30 days</span></div>
               <div className="kv"><span className="k">Min. followers</span><span className="v">25</span></div>
-              <div className="kv"><span className="k">Campaign contract</span><span className="v mono" style={{fontSize:11}}><a href={explorerAddressUrl(c.id)} target="_blank" rel="noopener noreferrer">{shortAddr(c.id)}</a></span></div>
+              <div className="kv"><span className="k">Campaign contract</span><span className="v mono" style={{fontSize:11}}><a href={campaignExplorerAddressUrl(c.network, c.id)} target="_blank" rel="noopener noreferrer">{shortAddr(c.id)}</a></span></div>
             </div>
           </div>
         </div>
@@ -3058,7 +3092,7 @@ function Profile({go, user, notify}){
                   {createdSho.map(c=>{
                     const f = c.full;
                     const distributedBps = f ? f.milestones.filter(m=>m.status==='claimed'||m.status==='claimable').reduce((s,m)=>s+m.bps,0) : 0;
-                    const locked = fmtTokenAmount(f ? f.locked : c.locked);
+                    const locked = fmtTokenAmount(f ? f.locked : c.locked, f ? f.rewardDecimals : undefined);
                     return (
                       <div key={c.id} className="created-card" onClick={()=>go(`/sho/${c.id}`)}>
                         <div className="camp-card-top">
@@ -3075,7 +3109,7 @@ function Profile({go, user, notify}){
                     const f = c.full;
                     const distributedEpochs = f ? f.epochs.filter(e=>e.status==='claimed'||e.status==='claimable').length : 0;
                     const distributedBps = f ? Math.round(10000*distributedEpochs/f.epochs.length) : 0;
-                    const locked = fmtTokenAmount(f ? f.locked : c.locked);
+                    const locked = fmtTokenAmount(f ? f.locked : c.locked, f ? f.rewardDecimals : undefined);
                     return (
                       <div key={c.id} className="created-card" onClick={()=>go(`/sso/${c.id}`)}>
                         <div className="camp-card-top">

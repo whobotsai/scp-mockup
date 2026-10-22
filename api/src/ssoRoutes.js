@@ -37,14 +37,22 @@ function router(provider, solanaConnection) {
   }
 
   // Same reasoning as shoRoutes.js's resolveRewardToken -- resolved once here rather than
-  // making the frontend issue its own extra RPC calls per campaign card.
+  // making the frontend issue its own extra RPC calls per campaign card. Also resolves
+  // decimals (see shoRoutes.js's own resolveRewardToken for why that matters for Solana).
   async function resolveRewardToken(rewardTokenAddress, tokenAddress, tokenSymbol) {
-    if (rewardTokenAddress === ethers.ZeroAddress) return { rewardToken: rewardTokenAddress, rewardTokenSymbol: "ETH" };
-    if (rewardTokenAddress.toLowerCase() === tokenAddress.toLowerCase()) {
-      return { rewardToken: rewardTokenAddress, rewardTokenSymbol: tokenSymbol };
+    if (rewardTokenAddress === ethers.ZeroAddress) {
+      return { rewardToken: rewardTokenAddress, rewardTokenSymbol: "ETH", rewardDecimals: 18 };
     }
-    const symbol = await new ethers.Contract(rewardTokenAddress, ERC20_ABI, provider).symbol().catch(() => null);
-    return { rewardToken: rewardTokenAddress, rewardTokenSymbol: symbol };
+    if (rewardTokenAddress.toLowerCase() === tokenAddress.toLowerCase()) {
+      const decimals = await new ethers.Contract(rewardTokenAddress, ERC20_ABI, provider).decimals().catch(() => 18);
+      return { rewardToken: rewardTokenAddress, rewardTokenSymbol: tokenSymbol, rewardDecimals: Number(decimals) };
+    }
+    const rewardContract = new ethers.Contract(rewardTokenAddress, ERC20_ABI, provider);
+    const [symbol, decimals] = await Promise.all([
+      rewardContract.symbol().catch(() => null),
+      rewardContract.decimals().catch(() => 18),
+    ]);
+    return { rewardToken: rewardTokenAddress, rewardTokenSymbol: symbol, rewardDecimals: Number(decimals) };
   }
 
   async function loadCampaignSummary(row) {
@@ -58,7 +66,7 @@ function router(provider, solanaConnection) {
       contract.rewardToken(),
       contract.epochLength(),
     ]);
-    const { rewardToken, rewardTokenSymbol } = await resolveRewardToken(rewardTokenAddress, row.token, erc20Symbol);
+    const { rewardToken, rewardTokenSymbol, rewardDecimals } = await resolveRewardToken(rewardTokenAddress, row.token, erc20Symbol);
     const currentEpoch = epochs.find((e) => e.status === "active") ?? null;
 
     return {
@@ -71,6 +79,7 @@ function router(provider, solanaConnection) {
       tokenAddress: row.token,
       rewardToken,
       rewardTokenSymbol,
+      rewardDecimals,
       epochSeconds: EPOCH_LENGTH_SECONDS[Number(epochLengthIndex)],
       creator: row.creator,
       locked: totalLocked.toString(),
@@ -84,8 +93,9 @@ function router(provider, solanaConnection) {
   }
 
   /// Solana counterpart of loadCampaignSummary above, against a decoded sso_solana Campaign
-  /// account. Same "no price/metadata source yet" gaps as shoRoutes.js's Solana path: no
-  /// mcap-equivalent is needed here (SSO never had one), but token name/symbol stay null.
+  /// account. SSO never had an mcap concept, so there's no equivalent gap to flag there;
+  /// token name/symbol/decimals come from solanaAbis.js's fetchSplTokenInfo, same as
+  /// shoRoutes.js's Solana path.
   async function loadSolanaCampaignSummary(row) {
     if (!solanaConnection) throw new Error("SOLANA_RPC_URL is not configured on this API instance");
     const campaignPubkey = new PublicKey(row.campaign_address);
@@ -108,17 +118,26 @@ function router(provider, solanaConnection) {
     const currentEpoch = epochs.find((e) => e.status === "active") ?? null;
     const isNative = c.rewardMint === solanaAbis.NATIVE_SOL_SENTINEL;
     const createdAt = new Date(Number(c.createdAt) * 1000);
+    const tokenInfo = await solanaAbis
+      .fetchSplTokenInfo(solanaConnection, new PublicKey(c.token))
+      .catch(() => ({ decimals: null, name: null, symbol: null }));
+    const rewardInfo = isNative
+      ? { decimals: 9, name: null, symbol: "SOL" }
+      : await solanaAbis
+          .fetchSplTokenInfo(solanaConnection, new PublicKey(c.rewardMint))
+          .catch(() => ({ decimals: null, name: null, symbol: null }));
 
     return {
       network: "solana",
       id: row.campaign_address,
       contract: row.campaign_address,
-      name: null,
-      token: null,
+      name: tokenInfo.name,
+      token: tokenInfo.symbol,
       keyword: c.keyword,
       tokenAddress: c.token,
       rewardToken: c.rewardMint,
-      rewardTokenSymbol: isNative ? "SOL" : null,
+      rewardTokenSymbol: rewardInfo.symbol,
+      rewardDecimals: rewardInfo.decimals ?? 9,
       epochSeconds: solanaAbis.EPOCH_LENGTH_SECONDS[c.epochLength],
       creator: c.creator,
       locked: c.totalLocked.toString(),

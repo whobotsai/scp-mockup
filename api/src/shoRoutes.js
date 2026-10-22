@@ -55,13 +55,23 @@ function router(provider, solanaConnection) {
   // Reward token can be the campaign token itself, native ETH (address(0)), or a separate
   // allowlisted stablecoin -- resolved here (rather than left for the frontend to make its own
   // extra RPC calls for) since it's a genuine display need, same rationale as tokenTwapMcap.
+  // Also resolves decimals -- the frontend used to assume every reward is 18-decimal (wrong
+  // for e.g. USDC's 6), which only mattered cosmetically on EVM but would be badly wrong for
+  // Solana's native SOL (9 decimals), so this got fixed for both chains together.
   async function resolveRewardToken(rewardTokenAddress, tokenAddress, tokenSymbol) {
-    if (rewardTokenAddress === ethers.ZeroAddress) return { rewardToken: rewardTokenAddress, rewardTokenSymbol: "ETH" };
-    if (rewardTokenAddress.toLowerCase() === tokenAddress.toLowerCase()) {
-      return { rewardToken: rewardTokenAddress, rewardTokenSymbol: tokenSymbol };
+    if (rewardTokenAddress === ethers.ZeroAddress) {
+      return { rewardToken: rewardTokenAddress, rewardTokenSymbol: "ETH", rewardDecimals: 18 };
     }
-    const symbol = await new ethers.Contract(rewardTokenAddress, ERC20_ABI, provider).symbol().catch(() => null);
-    return { rewardToken: rewardTokenAddress, rewardTokenSymbol: symbol };
+    if (rewardTokenAddress.toLowerCase() === tokenAddress.toLowerCase()) {
+      const decimals = await new ethers.Contract(rewardTokenAddress, ERC20_ABI, provider).decimals().catch(() => 18);
+      return { rewardToken: rewardTokenAddress, rewardTokenSymbol: tokenSymbol, rewardDecimals: Number(decimals) };
+    }
+    const rewardContract = new ethers.Contract(rewardTokenAddress, ERC20_ABI, provider);
+    const [symbol, decimals] = await Promise.all([
+      rewardContract.symbol().catch(() => null),
+      rewardContract.decimals().catch(() => 18),
+    ]);
+    return { rewardToken: rewardTokenAddress, rewardTokenSymbol: symbol, rewardDecimals: Number(decimals) };
   }
 
   async function loadCampaignSummary(row) {
@@ -75,7 +85,7 @@ function router(provider, solanaConnection) {
       tokenTwapMcap(row.token),
       contract.rewardToken(),
     ]);
-    const { rewardToken, rewardTokenSymbol } = await resolveRewardToken(rewardTokenAddress, row.token, erc20Symbol);
+    const { rewardToken, rewardTokenSymbol, rewardDecimals } = await resolveRewardToken(rewardTokenAddress, row.token, erc20Symbol);
 
     return {
       network: "evm",
@@ -86,6 +96,7 @@ function router(provider, solanaConnection) {
       tokenAddress: row.token,
       rewardToken,
       rewardTokenSymbol,
+      rewardDecimals,
       creator: row.creator,
       locked: totalLocked.toString(),
       windowSeconds: Number(row.window_seconds),
@@ -110,8 +121,9 @@ function router(provider, solanaConnection) {
   /// A Solana campaign has no price-sampling source yet (no chosen Solana DEX indexer — see
   /// keeper/src/solanaCampaignIndexer.js's header), so `mcap` is always null here, same
   /// "not ready yet" semantics tokenTwapMcap already uses for a too-young EVM campaign. Token
-  /// name/symbol likewise has no metadata source yet (no SPL metadata lookup implemented),
-  /// so those stay null rather than guessing.
+  /// name/symbol come from Metaplex metadata when the tracked mint has any (solanaAbis.js's
+  /// fetchSplTokenInfo) -- still null for a mint with none, same honest-gap posture as the
+  /// website/twitter/holders fields already null everywhere in this API.
   async function loadSolanaCampaignSummary(row) {
     if (!solanaConnection) throw new Error("SOLANA_RPC_URL is not configured on this API instance");
     const campaignPubkey = new PublicKey(row.campaign_address);
@@ -132,16 +144,25 @@ function router(provider, solanaConnection) {
 
     const isNative = c.rewardMint === solanaAbis.NATIVE_SOL_SENTINEL;
     const createdAt = new Date(Number(c.createdAt) * 1000);
+    const tokenInfo = await solanaAbis
+      .fetchSplTokenInfo(solanaConnection, new PublicKey(c.token))
+      .catch(() => ({ decimals: null, name: null, symbol: null }));
+    const rewardInfo = isNative
+      ? { decimals: 9, name: null, symbol: "SOL" }
+      : await solanaAbis
+          .fetchSplTokenInfo(solanaConnection, new PublicKey(c.rewardMint))
+          .catch(() => ({ decimals: null, name: null, symbol: null }));
 
     return {
       network: "solana",
       id: row.campaign_address,
       contract: row.campaign_address,
-      name: null,
-      token: null,
+      name: tokenInfo.name,
+      token: tokenInfo.symbol,
       tokenAddress: c.token,
       rewardToken: c.rewardMint,
-      rewardTokenSymbol: isNative ? "SOL" : null,
+      rewardTokenSymbol: rewardInfo.symbol,
+      rewardDecimals: rewardInfo.decimals ?? 9,
       creator: c.creator,
       locked: c.totalLocked.toString(),
       windowSeconds: solanaAbis.WINDOW_SECONDS[c.window],
