@@ -45,20 +45,26 @@ verified (built, tested, or deployed), not just written.
 
 ## Phase 2 — Solana: backend parity with the EVM side
 
+- [x] Wire Discover/campaign-detail pages to actually render Solana campaigns — `c.network`
+      is threaded through the frontend now; explorer links, the claim button, and a "Solana"
+      badge all branch on it correctly
+- [x] SPL token metadata lookup (name/symbol) — `api/src/solanaAbis.js::fetchSplTokenInfo`
+      reads a tracked mint's Metaplex metadata account when it has one, `null` (not invented)
+      when it doesn't
+- [x] *(found along the way, not originally listed)* Reward-amount decimals were hardcoded
+      to 18 everywhere — would have badly misrepresented native SOL (9 decimals). Both APIs
+      now return a real `rewardDecimals`, threaded through every frontend display call site
 - [ ] Choose a Solana DEX/trade source (Raydium? Jupiter? Pump.fun bonding curve?) — same
-      unresolved decision Pons.family already is for EVM, now needed twice
+      unresolved decision Pons.family already is for EVM, now needed twice. **Blocks the
+      three items below.**
 - [ ] Build a Solana trade indexer + price/TWAP oracle equivalent (`keeper/src/tradeSources/`
       has no Solana adapter yet)
 - [ ] Build a Solana on-chain poster (`post_milestone_root`/`post_epoch_root` automation) —
       decide its signer model now, before shipping a single-EOA version that then has to be
       migrated under live funds (see Phase 3)
-- [ ] Wire Discover/campaign-detail pages to actually render Solana campaigns (API already
-      returns them with `network: "solana"`; the frontend list/detail UI doesn't branch on
-      it yet)
-- [ ] Build the `claim_sol`/`claim_spl` claim UI (creation works; claiming doesn't exist in
-      the frontend yet for Solana)
-- [ ] SPL token metadata lookup (name/symbol) — currently always `null`, same honest gap as
-      `mcap`
+- [ ] Build the `claim_sol`/`claim_spl` claim UI (creation works; the detail page now shows a
+      clear "claiming not available yet" state instead of attempting a broken EVM claim, but
+      actual claiming needs the claim-proof API above first)
 
 ## Phase 3 — Security hardening (both networks) — Stage 3, currently NOT STARTED
 
