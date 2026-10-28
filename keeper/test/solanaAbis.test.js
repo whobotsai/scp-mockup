@@ -1,7 +1,7 @@
 "use strict";
 const { PublicKey, Keypair } = require("@solana/web3.js");
 const { test, assertEqual, summary } = require("./helpers/harness");
-const { decodeConfig, decodeShoCampaign, decodeSsoCampaign, NATIVE_SOL_SENTINEL } = require("../src/abis/solana");
+const { decodeConfig, decodeShoCampaign, decodeSsoCampaign, decodeMint, NATIVE_SOL_SENTINEL } = require("../src/abis/solana");
 
 // Hand-encodes a buffer matching contracts-solana/programs/*/src/state.rs's Borsh layout,
 // byte for byte, independently of src/abis/solana.js's own decoders -- this is the only
@@ -112,6 +112,17 @@ test("decodeSsoCampaign round-trips a hand-encoded variable-length Campaign buff
 
 test("native-SOL sentinel decodes to the expected all-'1' base58 string", () => {
   assertEqual(new PublicKey(Buffer.alloc(32)).toBase58(), NATIVE_SOL_SENTINEL);
+});
+
+test("decodeMint round-trips a hand-encoded SPL Mint buffer (supply at offset 36, decimals at 44)", () => {
+  const mintAuthorityOption = Buffer.concat([u32(1), pk(authority)]); // COption::Some(authority)
+  const buf = Buffer.concat([
+    mintAuthorityOption, u64(1_000_000_000_000n), u8(6) /* decimals */,
+    u8(1) /* is_initialized */, u32(0), Buffer.alloc(32) /* freeze_authority: COption::None */,
+  ]);
+  const m = decodeMint(buf);
+  assertEqual(m.supply, 1_000_000_000_000n);
+  assertEqual(m.decimals, 6);
 });
 
 summary();

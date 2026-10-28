@@ -97,27 +97,44 @@ and buy/sell aggregation in one call: each response item carries `volumeBuyUSD`/
 Ranks by gross USD volume (`sort_by=volume_usd`, Birdeye has no "net buy" sort) as a proxy for
 "most active traders," then computes net-buy among those — a deliberate approximation
 documented in the module's own header. Paginates (10 results per page is Birdeye's own hard
-max; `offset + limit <= 10000`) up to a campaign's `leaderboard_size`. Wired into `tick()` as
-a log-only step for now (`BIRDEYE_API_KEY` optional, same posture as other optional env vars
-above) — not yet feeding a milestone-detection/root-posting step, since that Solana
-equivalent of `milestoneEngine.js`/`onchainPoster.js` doesn't exist yet either. **Never
-actually called successfully** — this sandbox's egress policy blocks
-`public-api.birdeye.so`; validated only against a mocked `fetch`
-(`test/solanaTraderIndexer.test.js`). Verify a live response shape before trusting it with
-mainnet funds.
+max; `offset + limit <= 10000`) up to a campaign's `leaderboard_size`. **Never actually
+called successfully** — this sandbox's egress policy blocks `public-api.birdeye.so`;
+validated only against a mocked `fetch` (`test/solanaTraderIndexer.test.js`). Verify a live
+response shape before trusting it with mainnet funds.
+
+`solanaMilestoneEngine.js` + `solanaMerkleTree.js` + `solanaOnchainPoster.js` now give
+Solana SHO the same full milestone→snapshot→on-chain-root pipeline the EVM path has:
+`checkSolanaMilestones()` reads the campaign/mint accounts directly (`abis/solana.js`'s
+`decodeShoCampaign`/`decodeMint`), computes TWAP mcap the same way `milestoneEngine.js`
+does (reusing `twapOracle.js` unchanged), and on a crossing builds a snapshot from
+`solanaTraderIndexer.js`'s leaderboard + `rewardAllocator.js` (also reused unchanged) +
+`solanaMerkleTree.js` (a new tree builder — Solana's 32-byte Pubkey leaf encoding differs
+from `merkleTree.js`'s 20-byte-address one, see that module's header). `snapshotPublisher.js`
+and `alerts.js` needed no changes at all — both were already chain-agnostic.
+`solanaOnchainPoster.js` posts any pending snapshot's root via `post_milestone_root`/
+`post_epoch_root`, signed by a single keypair (`SOLANA_KEEPER_PRIVATE_KEY`), the same
+deliberate EOA-not-multisig simplification `onchainPoster.js` already documents for EVM —
+see that module's own header for the signer-model rationale. Wired into `tick()`/`main()`
+with the same optional-env-var posture as everything else here. **Never run against a live
+program** (`contracts-solana/` has never been deployed anywhere) — the pure encoding pieces
+(`solanaMerkleTree.js`, `anchorDiscriminator`/`buildPostRootInstruction` in
+`solanaOnchainPoster.js`) are unit-tested; the orchestration functions themselves are not,
+matching `milestoneEngine.js`/`onchainPoster.js`'s own precedent of validating
+heavily-I/O orchestration live rather than with mocks.
 
 Still not implemented for Solana campaigns at all:
-- The Milestone/Epoch Engine and On-chain Poster — a Solana campaign's milestones/epochs
-  never advance or get a root posted, because nothing drives `post_milestone_root`/
-  `post_epoch_root` for it yet.
-- Claiming — `scripts/claim-milestone.js` is EVM/ethers-only.
-- SSO epoch/root tracking entirely — `tickSolanaSso()` in `index.js` is a log-only
-  placeholder today.
+- Claiming — `scripts/claim-milestone.js` is EVM/ethers-only; no `claim_sol`/`claim_spl`
+  claim-proof API or UI exists yet.
+- SSO epoch/root tracking — blocked on more than just keeper code: **there is no Solana
+  Registry program at all** (no wallet↔X-handle linking equivalent to `Registry.sol`), so
+  even a Solana epoch engine would have nothing to resolve a post's wallet against.
+  `tickSolanaSso()` in `index.js` stays a log-only placeholder until that's addressed.
 
-Enabling this (`SOLANA_RPC_URL` + `SHO_SOLANA_PROGRAM_ID`/`SSO_SOLANA_PROGRAM_ID` in
-`.env`) against real deployed programs will index campaigns into the DB and sample prices
-for SHO ones, but milestones/epochs won't advance and claims won't work — don't point this
-at a program with real funds expecting them to resolve on their own.
+Enabling this (`SOLANA_RPC_URL` + `SHO_SOLANA_PROGRAM_ID`/`SSO_SOLANA_PROGRAM_ID` +
+`BIRDEYE_API_KEY` + `SOLANA_KEEPER_PRIVATE_KEY` in `.env`) against real deployed programs
+will index campaigns, sample prices, detect milestones, and post roots for Solana SHO —
+but claiming still won't work (see above), and SSO won't advance at all. Don't point this
+at a program with real funds expecting claiming to work.
 
 **Known accepted risk**: `@solana/web3.js@1.95.3` pulls in `bigint-buffer`, which
 `npm audit` flags as a high-severity buffer-overflow advisory affecting every 1.x release

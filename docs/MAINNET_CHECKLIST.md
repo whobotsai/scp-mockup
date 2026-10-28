@@ -67,15 +67,28 @@ verified (built, tested, or deployed), not just written.
       planned: Helius only answers "what did wallet X do," not "which wallets traded token Y,"
       so it would've needed its own wallet-discovery step first. Birdeye's endpoint returns
       per-wallet `volumeBuyUSD`/`volumeSellUSD` directly — no raw-transaction indexing needed
-      at all for Solana. Wired into `tick()` as a log-only step (not yet feeding root posting,
-      see the item below). Unit-tested only (mocked fetch) — this sandbox's egress policy
+      at all for Solana. Unit-tested only (mocked fetch) — this sandbox's egress policy
       blocks `public-api.birdeye.so`, never called against the real API
-- [ ] Build a Solana on-chain poster (`post_milestone_root`/`post_epoch_root` automation) —
-      decide its signer model now, before shipping a single-EOA version that then has to be
-      migrated under live funds (see Phase 3)
+- [x] Build a Solana on-chain poster (`post_milestone_root` automation, SHO) — signer model:
+      a single keypair (`SOLANA_KEEPER_PRIVATE_KEY`), the same deliberate EOA-not-multisig
+      simplification `onchainPoster.js` already uses for EVM (see Phase 3 for the eventual
+      multisig upgrade on both chains). `keeper/src/solanaMilestoneEngine.js` +
+      `solanaMerkleTree.js` (new — Solana's 32-byte-Pubkey leaf encoding differs from
+      `merkleTree.js`'s EVM one) + `solanaOnchainPoster.js` give Solana SHO the full
+      milestone→snapshot→on-chain-root pipeline; `snapshotPublisher.js`/`alerts.js` needed no
+      changes (already chain-agnostic). `post_epoch_root` (SSO) is blocked on a separate gap,
+      see below — not on signer model or poster plumbing, which is already shared/ready for it.
+      Pure encoding pieces unit-tested; orchestration not (matches
+      `milestoneEngine.js`/`onchainPoster.js`'s own untested-orchestration precedent). Never
+      run against a live program (`contracts-solana/` still undeployed anywhere)
+- [ ] **Newly found gap**: there is no Solana Registry program (wallet↔X-handle linking) —
+      blocks a Solana SSO epoch engine entirely, independent of the on-chain poster work above
+      (which is otherwise ready for SSO once this exists)
 - [ ] Build the `claim_sol`/`claim_spl` claim UI (creation works; the detail page now shows a
       clear "claiming not available yet" state instead of attempting a broken EVM claim, but
-      actual claiming needs the claim-proof API above first)
+      actual claiming needs a claim-proof API — entries/proofs now exist in `snapshots.entries`
+      via the on-chain poster work above, so this is building the lookup API/UI on top of
+      already-computed data, not starting from scratch)
 
 ## Phase 3 — Security hardening (both networks) — Stage 3, currently NOT STARTED
 

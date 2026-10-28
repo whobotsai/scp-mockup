@@ -3,9 +3,10 @@
 // the Milestone/Epoch Engine, the Snapshot Publisher, the On-chain Poster, and the
 // missed-root alert on a polling loop. This is Stage 1 build-order steps 1-4
 // (KEEPER_SERVICE_DESIGN.md section 8) — root posting is automatic for both campaign types
-// (see src/onchainPoster.js for the one deliberate simplification shared by both: a
-// single-signer EOA standing in for the design doc's 3-of-5 Gnosis Safe).
-// scripts/post-milestone-root.js still exists for a manual SHO override, but is no longer
+// on EVM (see src/onchainPoster.js for the one deliberate simplification shared by both: a
+// single-signer EOA standing in for the design doc's 3-of-5 Gnosis Safe) and, for Solana SHO,
+// via src/solanaOnchainPoster.js (same single-keypair simplification, see its own header).
+// scripts/post-milestone-root.js still exists for a manual EVM SHO override, but is no longer
 // needed for the normal path.
 "use strict";
 require("dotenv").config();
@@ -17,8 +18,8 @@ const { pollTradesForCampaign } = require("./tradeIndexer");
 const { netBuyVolumeForCampaign } = require("./volumeAggregator");
 const { samplePrice } = require("./priceSampler");
 const { sampleSolanaPrice } = require("./solanaPriceSampler");
-const { netBuyVolumeForSolanaToken } = require("./solanaTraderIndexer");
 const { checkMilestones } = require("./milestoneEngine");
+const { checkSolanaMilestones } = require("./solanaMilestoneEngine");
 const { pollNewSsoCampaigns } = require("./ssoCampaignIndexer");
 const { pollNewRegistrations } = require("./registrationIndexer");
 const { pollPostsForCampaign } = require("./socialIndexer");
@@ -26,6 +27,7 @@ const { epochScoresForCampaign } = require("./socialScoreAggregator");
 const { checkEpochs } = require("./epochEngine");
 const { publishPendingSnapshots, DEFAULT_PUBLISH_INTERVAL_MS } = require("./snapshotPublisher");
 const { postPendingRoots } = require("./onchainPoster");
+const { postPendingSolanaRoots, loadKeeperKeypair } = require("./solanaOnchainPoster");
 const { checkMissedRootAlerts } = require("./alerts");
 const db = require("./db");
 
@@ -49,25 +51,22 @@ async function tickSho(provider, c) {
   }
 }
 
-// Solana SHO: price sampling + leaderboard computation exist now (milestone posting and
-// claim-proof generation are still open -- see docs/MAINNET_CHECKLIST.md Phase 2). Leaderboard
-// computation is log-only for now, same as the EVM tickSho's own leaderboard log line -- it
-// isn't fed into a milestone-detection/root-posting step yet, since that Solana equivalent of
-// milestoneEngine.js/onchainPoster.js doesn't exist yet either (see the checklist's "Solana
-// on-chain poster" item). BIRDEYE_API_KEY is optional, same posture as KEEPER_PRIVATE_KEY and
-// SOLANA_RPC_URL: leaderboard computation simply stays off without it rather than hard-exiting.
-async function tickSolanaSho(c) {
+// Solana SHO: price sampling + milestone detection + snapshot computation now mirror the EVM
+// path end to end (solanaMilestoneEngine.js uses solanaTraderIndexer.js/Birdeye for the
+// leaderboard instead of a local trades table -- see that module's own header). Posting the
+// resulting snapshot on-chain is solanaOnchainPoster.js's job, same shared "any unposted
+// snapshot gets picked up automatically" step as the EVM path below, not done here.
+// BIRDEYE_API_KEY is optional, same posture as KEEPER_PRIVATE_KEY and SOLANA_RPC_URL:
+// milestone detection simply stays off without it (netBuyVolumeForSolanaToken needs it)
+// rather than hard-exiting the whole keeper.
+async function tickSolanaSho(connection, c) {
   await sampleSolanaPrice(c.token);
 
   if (process.env.BIRDEYE_API_KEY) {
     try {
-      const leaderboard = await netBuyVolumeForSolanaToken(c.token, Number(c.window_seconds), c.leaderboard_size);
-      console.log(
-        `[solanaTraderIndexer] ${c.campaign_address}: ${leaderboard.length} eligible wallet(s)` +
-          (leaderboard.length ? `, top: ${leaderboard[0].wallet} ($${leaderboard[0].score.toFixed(2)})` : "")
-      );
+      await checkSolanaMilestones(connection, c);
     } catch (e) {
-      console.error(`[solanaTraderIndexer] leaderboard fetch failed for ${c.campaign_address}:`, e.message);
+      console.error(`[solanaMilestoneEngine] check failed for ${c.campaign_address}:`, e.message);
     }
   }
 }
@@ -92,7 +91,7 @@ async function tickSso(provider, c) {
   await checkEpochs(provider, c);
 }
 
-async function tick(provider, keeperWallet, publishIntervalMs, solanaConnection) {
+async function tick(provider, keeperWallet, publishIntervalMs, solanaConnection, solanaKeeperKeypair) {
   await pollNewCampaigns(provider, process.env.SHO_FACTORY_ADDRESS, Number(process.env.SHO_FACTORY_DEPLOY_BLOCK || 0));
 
   // SSO/Registry discovery only run once their addresses are actually configured -- this
@@ -128,7 +127,7 @@ async function tick(provider, keeperWallet, publishIntervalMs, solanaConnection)
         if (c.factory === "sso") {
           await tickSolanaSso(c);
         } else {
-          await tickSolanaSho(c);
+          await tickSolanaSho(solanaConnection, c);
         }
       } else if (c.factory === "sso") {
         await tickSso(provider, c);
@@ -150,6 +149,9 @@ async function tick(provider, keeperWallet, publishIntervalMs, solanaConnection)
   await publishPendingSnapshots(publishIntervalMs);
   if (keeperWallet) {
     await postPendingRoots(provider, keeperWallet);
+  }
+  if (solanaConnection && solanaKeeperKeypair) {
+    await postPendingSolanaRoots(solanaConnection, solanaKeeperKeypair);
   }
   await checkMissedRootAlerts();
 }
@@ -197,11 +199,19 @@ async function main() {
     console.log("[keeper] BIRDEYE_API_KEY not set -- Solana SHO leaderboard computation is disabled this run.");
   }
 
+  // Same optional posture as keeperWallet above, for the same reason -- see
+  // solanaOnchainPoster.js's own header for the signer-model rationale (single keypair now,
+  // a real multisig before any Solana campaign with real funds goes live).
+  const solanaKeeperKeypair = loadKeeperKeypair();
+  if (!solanaKeeperKeypair) {
+    console.log("[keeper] SOLANA_KEEPER_PRIVATE_KEY not set -- automatic Solana root posting is disabled this run.");
+  }
+
   console.log(`Keeper (Stage 1, steps 1-4) starting. Polling every ${pollIntervalMs}ms.`);
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
-      await tick(provider, keeperWallet, publishIntervalMs, solanaConnection);
+      await tick(provider, keeperWallet, publishIntervalMs, solanaConnection, solanaKeeperKeypair);
     } catch (e) {
       console.error("[keeper] tick failed:", e);
     }

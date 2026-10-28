@@ -127,6 +127,19 @@ function decodeSsoCampaign(data) {
   };
 }
 
+// SPL Token's Mint account (legacy pre-Anchor program, no 8-byte discriminator): layout is
+// mint_authority: COption<Pubkey> (4-byte tag + 32 bytes, always present even when None) +
+// supply: u64 (offset 36) + decimals: u8 (offset 44) + ... Needed by solanaMilestoneEngine.js
+// to compute a Solana SHO campaign's circulating mcap the same way milestoneEngine.js does for
+// EVM (TWAP price * circulating supply) -- api/src/solanaAbis.js has its own independent copy
+// of the decimals-only half of this (decodeMintDecimals), per this project's per-package
+// duplication convention; this one also needs supply, which that one doesn't.
+function decodeMint(data) {
+  const supply = data.readBigUInt64LE(36);
+  const decimals = data.readUInt8(44);
+  return { supply, decimals };
+}
+
 /// `Pubkey::default()` (32 zero bytes) is how both programs' Rust code spells "native SOL"
 /// for `reward_mint` -- base58-encodes to this all-'1' string (see
 /// contracts-solana/programs/*/src/state.rs::Campaign::is_native). Same sentinel-value role
@@ -141,4 +154,5 @@ module.exports = {
   decodeConfig,
   decodeShoCampaign,
   decodeSsoCampaign,
+  decodeMint,
 };
