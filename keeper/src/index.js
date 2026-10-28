@@ -17,6 +17,7 @@ const { pollTradesForCampaign } = require("./tradeIndexer");
 const { netBuyVolumeForCampaign } = require("./volumeAggregator");
 const { samplePrice } = require("./priceSampler");
 const { sampleSolanaPrice } = require("./solanaPriceSampler");
+const { netBuyVolumeForSolanaToken } = require("./solanaTraderIndexer");
 const { checkMilestones } = require("./milestoneEngine");
 const { pollNewSsoCampaigns } = require("./ssoCampaignIndexer");
 const { pollNewRegistrations } = require("./registrationIndexer");
@@ -48,13 +49,27 @@ async function tickSho(provider, c) {
   }
 }
 
-// Solana SHO: only price sampling exists so far (trade indexing, milestone posting, and
-// claim-proof generation are all still open -- see docs/MAINNET_CHECKLIST.md Phase 2). This
-// at least keeps a price/TWAP history accumulating for any discovered Solana SHO campaign's
-// tracked token from the moment it's indexed, rather than starting that clock only once the
-// rest of the pipeline exists.
+// Solana SHO: price sampling + leaderboard computation exist now (milestone posting and
+// claim-proof generation are still open -- see docs/MAINNET_CHECKLIST.md Phase 2). Leaderboard
+// computation is log-only for now, same as the EVM tickSho's own leaderboard log line -- it
+// isn't fed into a milestone-detection/root-posting step yet, since that Solana equivalent of
+// milestoneEngine.js/onchainPoster.js doesn't exist yet either (see the checklist's "Solana
+// on-chain poster" item). BIRDEYE_API_KEY is optional, same posture as KEEPER_PRIVATE_KEY and
+// SOLANA_RPC_URL: leaderboard computation simply stays off without it rather than hard-exiting.
 async function tickSolanaSho(c) {
   await sampleSolanaPrice(c.token);
+
+  if (process.env.BIRDEYE_API_KEY) {
+    try {
+      const leaderboard = await netBuyVolumeForSolanaToken(c.token, Number(c.window_seconds), c.leaderboard_size);
+      console.log(
+        `[solanaTraderIndexer] ${c.campaign_address}: ${leaderboard.length} eligible wallet(s)` +
+          (leaderboard.length ? `, top: ${leaderboard[0].wallet} ($${leaderboard[0].score.toFixed(2)})` : "")
+      );
+    } catch (e) {
+      console.error(`[solanaTraderIndexer] leaderboard fetch failed for ${c.campaign_address}:`, e.message);
+    }
+  }
 }
 
 // Solana SSO: nothing implemented yet beyond discovery (no epoch/root/claim mechanics ported
@@ -177,6 +192,9 @@ async function main() {
   const solanaConnection = process.env.SOLANA_RPC_URL ? new Connection(process.env.SOLANA_RPC_URL, "confirmed") : null;
   if (!solanaConnection) {
     console.log("[keeper] SOLANA_RPC_URL not set -- Solana campaign discovery is disabled this run.");
+  }
+  if (!process.env.BIRDEYE_API_KEY) {
+    console.log("[keeper] BIRDEYE_API_KEY not set -- Solana SHO leaderboard computation is disabled this run.");
   }
 
   console.log(`Keeper (Stage 1, steps 1-4) starting. Polling every ${pollIntervalMs}ms.`);

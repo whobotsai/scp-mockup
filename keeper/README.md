@@ -85,9 +85,28 @@ math (`twapOracle.js`) the EVM path uses — this part is chain-agnostic and was
 `api.dexscreener.com`; validated only against a mocked `fetch` (`test/solanaPriceSampler.test.js`).
 Verify the real response shape against a live call before trusting it with mainnet funds.
 
+`solanaTraderIndexer.js` computes the SHO leaderboard (per-wallet net-buy USD volume) via
+[Birdeye's Token - Top Traders API](https://docs.birdeye.so/reference/get_defi-v2-tokens-top-traders)
+(`GET /defi/v2/tokens/top_traders`) rather than indexing raw transactions ourselves. This
+replaced an earlier plan to use Helius's "Enhanced Transactions" API: that API only answers
+"what did wallet X do," not "which wallets traded token Y" — it would have needed its own
+wallet-discovery step first (e.g. scanning the pool's own swap signatures), putting us back
+in the business of parsing raw Solana instructions. Birdeye's endpoint does both discovery
+and buy/sell aggregation in one call: each response item carries `volumeBuyUSD`/
+`volumeSellUSD`, so net-buy = `volumeBuyUSD - volumeSellUSD` needs no further computation.
+Ranks by gross USD volume (`sort_by=volume_usd`, Birdeye has no "net buy" sort) as a proxy for
+"most active traders," then computes net-buy among those — a deliberate approximation
+documented in the module's own header. Paginates (10 results per page is Birdeye's own hard
+max; `offset + limit <= 10000`) up to a campaign's `leaderboard_size`. Wired into `tick()` as
+a log-only step for now (`BIRDEYE_API_KEY` optional, same posture as other optional env vars
+above) — not yet feeding a milestone-detection/root-posting step, since that Solana
+equivalent of `milestoneEngine.js`/`onchainPoster.js` doesn't exist yet either. **Never
+actually called successfully** — this sandbox's egress policy blocks
+`public-api.birdeye.so`; validated only against a mocked `fetch`
+(`test/solanaTraderIndexer.test.js`). Verify a live response shape before trusting it with
+mainnet funds.
+
 Still not implemented for Solana campaigns at all:
-- Trade indexing (per-wallet net-buy volume for the SHO leaderboard) — the plan is Helius's
-  Enhanced Transactions API, not yet built.
 - The Milestone/Epoch Engine and On-chain Poster — a Solana campaign's milestones/epochs
   never advance or get a root posted, because nothing drives `post_milestone_root`/
   `post_epoch_root` for it yet.

@@ -62,10 +62,14 @@ verified (built, tested, or deployed), not just written.
       Auto-registers the pool into `token_pools` on first sample (no manual step, unlike
       EVM's `register-token-pool.js`). Unit-tested only (mocked fetch) — this sandbox's
       egress policy blocks `api.dexscreener.com`, never called against the real API
-- [ ] Choose + build a Solana trade-attribution source for the SHO net-buy-volume
-      leaderboard (DexScreener only exposes aggregate pair stats, not per-wallet data) —
-      plan is **Helius Enhanced Transactions API**, not yet built. **Blocks the two items
-      below.**
+- [x] Solana trade-attribution source for the SHO net-buy-volume leaderboard — **Birdeye's
+      Token - Top Traders API** (`keeper/src/solanaTraderIndexer.js`), not Helius as originally
+      planned: Helius only answers "what did wallet X do," not "which wallets traded token Y,"
+      so it would've needed its own wallet-discovery step first. Birdeye's endpoint returns
+      per-wallet `volumeBuyUSD`/`volumeSellUSD` directly — no raw-transaction indexing needed
+      at all for Solana. Wired into `tick()` as a log-only step (not yet feeding root posting,
+      see the item below). Unit-tested only (mocked fetch) — this sandbox's egress policy
+      blocks `public-api.birdeye.so`, never called against the real API
 - [ ] Build a Solana on-chain poster (`post_milestone_root`/`post_epoch_root` automation) —
       decide its signer model now, before shipping a single-EOA version that then has to be
       migrated under live funds (see Phase 3)
