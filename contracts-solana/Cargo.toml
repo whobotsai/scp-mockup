@@ -1,5 +1,5 @@
 [workspace]
-members = ["programs/common", "programs/sho_solana", "programs/sso_solana"]
+members = ["programs/common", "programs/sho_solana", "programs/sso_solana", "programs/registry_solana"]
 resolver = "2"
 
 [profile.release]

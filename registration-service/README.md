@@ -8,13 +8,18 @@ back.
 
 ```
 src/
-  attestation.js   Signs (and can independently verify) the ECDSA attestation Registry.sol
-                    checks -- the one piece of math this whole service exists to get right
-  pkce.js          OAuth 2.0 PKCE helpers (RFC 7636)
-  xOAuth.js        X's OAuth 2.0 token exchange + user-info fetch (see its header for caveats)
-  sessions.js      Short-lived in-memory store for in-flight OAuth attempts
-  db.js            Postgres access -- the registrations audit table
-  server.js        Express app: /auth/x/start, /auth/x/callback
+  attestation.js       Signs (and can independently verify) the ECDSA attestation
+                        Registry.sol checks -- the one piece of math this whole service
+                        exists to get right, for EVM
+  solanaAttestation.js Solana counterpart -- see "Solana support" below for why its job is
+                        shaped differently (co-signs a transaction, not a fixed digest)
+  pkce.js              OAuth 2.0 PKCE helpers (RFC 7636)
+  xOAuth.js            X's OAuth 2.0 token exchange + user-info fetch (see its header for caveats)
+  sessions.js          Short-lived in-memory store for in-flight OAuth attempts (also reused
+                        for the Solana "OAuth verified, pending signature" marker)
+  db.js                Postgres access -- the registrations audit table (EVM only)
+  server.js            Express app: /auth/x/start, /auth/x/callback, /solana-attestor,
+                        POST /attest/solana
 migrations/001_init.sql  Postgres schema (one audit table)
 ```
 
@@ -91,6 +96,35 @@ using the connected wallet -- see `../public/index.html`'s `LinkXCallback`.
 
 `npm test` runs the attestation + PKCE unit tests only (no `.env`/DB/network needed) -- this
 is what's actually verifiable without live infrastructure and a real X Developer App.
+
+## Solana support: signing capability built, nothing wired into a UI yet
+
+`contracts-solana/programs/registry_solana` (new, see that package's own README) ports
+`Registry.sol`, with one real design difference: it has no cheap way to verify an arbitrary
+detached signature on-chain the way `ECDSA.recover` does for EVM, so `register_handle`
+instead requires the attestor to **co-sign the same transaction** as a second `Signer`
+account. That reshapes this service's job for Solana: instead of signing a fixed digest over
+`(wallet, xHandle)` up front (like `signAttestation`), it signs whatever exact transaction
+message bytes the frontend hands it, *after* confirming OAuth genuinely verified that
+`(wallet, xHandle)` pair — see `solanaAttestation.js`'s and `server.js`'s own comments.
+
+What exists: `SOLANA_ATTESTOR_PRIVATE_KEY` (a separate Ed25519 keypair — Solana's native
+scheme, not reusable with `ATTESTOR_PRIVATE_KEY`'s secp256k1 key), `/auth/x/start?network=solana`
+(validates a base58 wallet instead of a 0x address), the callback's Solana branch (stores a
+one-time "verified" marker instead of returning an attestation immediately), `GET
+/solana-attestor` (the attestor's pubkey, so a client can build the transaction before it has
+anything to post for signing), and `POST /attest/solana` (co-signs a client-built
+transaction's message, gated on that verified marker). All unit-tested (`solanaAttestation.test.js`)
+and smoke-tested against a locally-run instance of this service (`/health`, wallet validation,
+the 503-without-a-key and 403-without-OAuth-verification paths) — but **never run through a
+real X OAuth round-trip or against a deployed `registry_solana` program**, unlike the EVM flow
+documented above.
+
+**Not built yet**: the frontend side of this (`public/index.html` has no Solana "link X" page
+— no `connectX`-for-Solana redirect, no `register_handle` instruction builder, no
+`LinkXCallback`-for-Solana that calls `POST /attest/solana` and submits the co-signed
+transaction). See `contracts-solana/README.md`'s "What's NOT done yet" for the full list of
+what's still missing before a Solana wallet can actually complete a registration end-to-end.
 
 ## Deliberate scope limits
 

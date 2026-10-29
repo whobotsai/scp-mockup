@@ -14,6 +14,7 @@ const { ethers } = require("ethers");
 const { Connection } = require("@solana/web3.js");
 const { pollNewCampaigns } = require("./campaignIndexer");
 const { pollNewSolanaCampaigns } = require("./solanaCampaignIndexer");
+const { pollNewSolanaRegistrations } = require("./registrySolanaIndexer");
 const { pollTradesForCampaign } = require("./tradeIndexer");
 const { netBuyVolumeForCampaign } = require("./volumeAggregator");
 const { samplePrice } = require("./priceSampler");
@@ -114,6 +115,13 @@ async function tick(provider, keeperWallet, publishIntervalMs, solanaConnection,
   }
   if (solanaConnection && process.env.SSO_SOLANA_PROGRAM_ID) {
     await pollNewSolanaCampaigns(solanaConnection, process.env.SSO_SOLANA_PROGRAM_ID, "sso");
+  }
+  // Same "optional" posture: stays off unless both SOLANA_RPC_URL and
+  // REGISTRY_SOLANA_PROGRAM_ID are configured. Populates the same handle_registrations table
+  // registrationIndexer.js (EVM) already writes into -- see registrySolanaIndexer.js's own
+  // header for why no other keeper code needs to change for Solana wallet resolution to work.
+  if (solanaConnection && process.env.REGISTRY_SOLANA_PROGRAM_ID) {
+    await pollNewSolanaRegistrations(solanaConnection, process.env.REGISTRY_SOLANA_PROGRAM_ID);
   }
 
   // Each campaign's tick is wrapped in its own try/catch: without this, one campaign

@@ -122,17 +122,32 @@ program** (`contracts-solana/` has never been deployed anywhere) — the pure en
 matching `milestoneEngine.js`/`onchainPoster.js`'s own precedent of validating
 heavily-I/O orchestration live rather than with mocks.
 
-Still not implemented for Solana campaigns at all:
-- Claiming — `scripts/claim-milestone.js` is EVM/ethers-only; no `claim_sol`/`claim_spl`
-  claim-proof API or UI exists yet.
-- SSO epoch/root tracking — blocked on more than just keeper code: **there is no Solana
-  Registry program at all** (no wallet↔X-handle linking equivalent to `Registry.sol`), so
-  even a Solana epoch engine would have nothing to resolve a post's wallet against.
-  `tickSolanaSso()` in `index.js` stays a log-only placeholder until that's addressed.
+`registrySolanaIndexer.js` (new) discovers wallet↔X-handle registrations from
+`registry_solana` (`contracts-solana/`'s new Registry port — see its own README for why
+`register_handle` needed a different signing model than `Registry.sol`'s on-chain ECDSA
+check) the identical way `solanaCampaignIndexer.js` discovers campaigns: `Config`'s own
+`next_registration_id` counter, no event-log scanning. Writes into the *same*
+`handle_registrations` table `registrationIndexer.js` already populates for EVM — chain-
+agnostic, so `socialIndexer.js`'s `resolveWalletForHandle` lookup needs no changes at all to
+work for a Solana-registered wallet. This is the piece that actually unblocks a future
+Solana SSO epoch engine (see below). Unit-tested (`registryAbis.test.js`) — never run
+against a live program, same standing caveat as everything else Solana in this package.
 
-Enabling this (`SOLANA_RPC_URL` + `SHO_SOLANA_PROGRAM_ID`/`SSO_SOLANA_PROGRAM_ID` +
-`BIRDEYE_API_KEY` + `SOLANA_KEEPER_PRIVATE_KEY` in `.env`) against real deployed programs
-will index campaigns, sample prices, detect milestones, and post roots for Solana SHO —
+Still not implemented for Solana campaigns at all:
+- Claiming now works for **SHO** (`solanaOnchainPoster.js` + `api/src/claimRoutes.js` +
+  `public/index.html`'s `submitShoClaimSolana`) — see `docs/MAINNET_CHECKLIST.md`.
+- SSO epoch/root tracking — `registrySolanaIndexer.js` above removes the *data* blocker (a
+  Solana epoch engine now has somewhere to resolve a post's wallet against), but the engine
+  itself (`solanaEpochEngine.js`, a Solana-aware `socialIndexer.js`, SSO's half of
+  `solanaOnchainPoster.js`) still doesn't exist. `tickSolanaSso()` in `index.js` stays a
+  log-only placeholder until it's built. The registration-service and frontend "link X on
+  Solana" UI also don't exist yet — see `registration-service/README.md`'s own Solana
+  section for exactly what's built there vs. still missing.
+
+Enabling this (`SOLANA_RPC_URL` + `SHO_SOLANA_PROGRAM_ID`/`SSO_SOLANA_PROGRAM_ID`/
+`REGISTRY_SOLANA_PROGRAM_ID` + `BIRDEYE_API_KEY` + `SOLANA_KEEPER_PRIVATE_KEY` in `.env`)
+against real deployed programs will index campaigns, sample prices, detect milestones, post
+roots for Solana SHO, and index handle registrations —
 but claiming still won't work (see above), and SSO won't advance at all. Don't point this
 at a program with real funds expecting claiming to work.
 

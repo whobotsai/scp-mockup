@@ -25,13 +25,24 @@ EVM side's two separate factories sharing `contracts/src/libraries/*.sol` and
   `SHOCampaign.sol`: per PRD §12.3, milestones (one-way, market-cap-gated) and epochs
   (recurring, scheduled) are different enough state machines that merging them would make
   both harder to audit.
+- `programs/registry_solana` — wallet↔X-handle linking. Mirrors
+  `contracts/src/registry/Registry.sol`. Fully standalone (no `sho_sso_common` dependency,
+  same independence `Registry.sol` has from `FactoryBase.sol` on EVM), and the one program
+  here that **unblocks SSO on Solana at all** — `sso_solana`'s epoch-scoring leaderboard has
+  nothing to resolve a social post's wallet against without it. See its own `lib.rs` header
+  for the biggest design difference from the EVM version: instead of verifying an off-chain
+  ECDSA attestation inside the instruction (Solana has no cheap on-chain secp256k1 recovery
+  the way EVM's `ecrecover` is), `register_handle` requires the attestor to co-sign the same
+  transaction as a second `Signer` — simpler, equally secure, and avoids hand-rolling
+  Ed25519-sysvar-introspection byte parsing that `cargo check` can't catch mistakes in.
 
-Each program implements: `initialize_config`, `set_treasury`, `set_keeper`,
+`sho_solana`/`sso_solana` each implement: `initialize_config`, `set_treasury`, `set_keeper`,
 `create_campaign_sol` / `create_campaign_spl`, the keeper-only root-posting instruction
 (`post_milestone_root` for SHO, `post_epoch_root` for SSO), and `claim_sol` / `claim_spl`.
+`registry_solana` implements `initialize_config`, `set_attestor`, and `register_handle`.
 
 Validated with `cargo check --workspace` against a native target (dependency resolution +
-full type/borrow-check pass across all three crates) — see "What `cargo check` passed does
+full type/borrow-check pass across all four crates) — see "What `cargo check` passed does
 and doesn't prove" below for what that does and doesn't cover.
 
 ## Deliberate differences from the Solidity versions (and why)
@@ -49,23 +60,26 @@ and doesn't prove" below for what that does and doesn't cover.
 
 ## What's NOT done yet
 
-- **No keeper-side Solana support**: no Solana trade indexer, no Solana TWAP oracle, no
-  Solana merkle-tree builder matching `common/src/merkle.rs`'s leaf encoding, no Solana
-  transaction submission in `keeper/src/onchainPoster.js`. The keeper today only knows how
-  to talk to the EVM contracts — for either campaign type.
-- **No API-side Solana support**: `api/src/*Routes.js` only reads from the EVM-facing
-  Postgres tables the keeper populates.
-- **Frontend campaign *creation* now supports Solana** (`public/index.html`'s
-  `CreateWizard`): a network picker, a `window.solana` (Phantom-compatible) wallet connect
-  flow alongside the existing EVM one, and hand-built Anchor instructions (no Anchor TS
-  client — see the "Raw instruction-building" comment above the Solana helpers in
-  `index.html`) for `create_campaign_sol`/`create_campaign_spl` on both programs.
-  `@solana/web3.js` is vendored the same way as `ethers.umd.min.js`, at
-  `public/vendor/solanaWeb3.min.js`. **Discover and claim still have no Solana path at
-  all** — a Solana campaign created through the wizard routes back to the (EVM-only)
-  Discover list rather than a working detail page, because that depends on the keeper/API
-  Solana support above, which doesn't exist yet.
-- **No TS test suite yet** for either program (the equivalent of
+- **SHO has full keeper/API/frontend support**: `keeper/src/solanaPriceSampler.js` (price,
+  via DexScreener), `solanaTraderIndexer.js` (leaderboard, via Birdeye), `solanaMerkleTree.js`
+  + `solanaMilestoneEngine.js` + `solanaOnchainPoster.js` (snapshot → on-chain root posting),
+  and the API's `claimRoutes.js`/`shoRoutes.js` (claim-proof, live mcap, live leaderboard) —
+  end to end, create → discover → price → leaderboard → milestone → snapshot → post root →
+  claim. See `keeper/README.md`'s "Solana support" section for the full picture and its
+  caveats (none of it has ever been called against a live API or deployed program).
+- **SSO has none of the above yet, and that's now specifically blocked on `registry_solana`
+  having its own keeper/API/frontend wiring**, not on `sso_solana`'s own instructions (which
+  are as ready as `sho_solana`'s — see the comparison table above). Concretely still
+  missing: a `registrySolanaIndexer.js` (keeper-side discovery of `Registration` PDAs,
+  mirroring `solanaCampaignIndexer.js`'s `Config.next_id`-counter pattern — see
+  `registry_solana/src/state.rs`'s own `Registration` doc comment), a Solana-aware signing
+  path in `registration-service/` (the EVM attestor signs ECDSA; Solana's `register_handle`
+  needs the attestor to co-sign the transaction instead, see `registry_solana/src/lib.rs`'s
+  header), a Solana `solanaEpochEngine.js`/`solanaOnchainPoster.js` SSO path (the poster
+  plumbing is already shared/ready — see `keeper/src/solanaOnchainPoster.js` — only the
+  epoch-detection half is missing), and the frontend's own "link X account" flow extended
+  for a Solana wallet.
+- **No TS test suite yet** for any of the three programs (the equivalent of
   `contracts/test/{sho,sso}.test.js` / `test/helpers/{deploy,merkle,harness}.js`, run with
   `anchor test` against a local validator).
 - **Never built to BPF/SBF, never deployed anywhere, not even localnet.**
@@ -92,8 +106,8 @@ egress policy — only `crates.io`'s actual package hosts, `index.crates.io` /
    matching the `Cargo.toml` pins), run `anchor build`, then `anchor keys list` and paste
    each program's real generated id into its own `declare_id!(...)` and `Anchor.toml`'s
    `[programs.localnet]` entry. The placeholders currently in place (`Fg6PaFp...` for
-   `sho_solana`, `9xQeWvG8...` for `sso_solana`) are **not** keys anyone controls, and must
-   not be used past localnet testing.
+   `sho_solana`, `9xQeWvG8...` for `sso_solana`, `E6pYGM6c...` for `registry_solana`) are
+   **not** keys anyone controls, and must not be used past localnet testing.
 2. Write `tests/sho.ts` and `tests/sso.ts` mirroring `contracts/test/{sho,sso}.test.js`'s
    scenarios (happy-path SOL/SPL campaigns, fee split, milestone/epoch reach + challenge-
    window correction + elapsed-window rejection, valid/invalid/double claim, non-keeper

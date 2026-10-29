@@ -7,6 +7,7 @@ skip-lint = false
 [programs.localnet]
 sho_solana = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
 sso_solana = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
+registry_solana = "E6pYGM6cDh1WqLjkDRMfvwMMGBD6CWQSfA3msuNYMy3Y"
 
 [registry]
 url = "https://api.apr.dev"

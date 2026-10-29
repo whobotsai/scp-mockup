@@ -81,9 +81,30 @@ verified (built, tested, or deployed), not just written.
       Pure encoding pieces unit-tested; orchestration not (matches
       `milestoneEngine.js`/`onchainPoster.js`'s own untested-orchestration precedent). Never
       run against a live program (`contracts-solana/` still undeployed anywhere)
-- [ ] **Newly found gap**: there is no Solana Registry program (wallet↔X-handle linking) —
-      blocks a Solana SSO epoch engine entirely, independent of the on-chain poster work above
-      (which is otherwise ready for SSO once this exists)
+- [x] **Solana Registry program** (`contracts-solana/programs/registry_solana`, new) — ports
+      `Registry.sol`'s wallet↔X-handle linking. Biggest design difference: Solana has no cheap
+      on-chain secp256k1 recovery, so instead of verifying a detached ECDSA attestation inside
+      the instruction, `register_handle` requires the attestor to **co-sign the same
+      transaction** as a second `Signer` — simpler and equally secure, avoids hand-rolling
+      Ed25519-sysvar-instruction-introspection byte parsing that `cargo check` can't catch
+      mistakes in. **v1 simplification**: a wallet can link a handle exactly once (no
+      "switch to a different handle" path like `Registry.sol` has — see `HandleLink`'s own doc
+      comment in `state.rs` for why and when to revisit). `cargo check --workspace` passes.
+      - `keeper/src/registrySolanaIndexer.js` (new) discovers registrations the same
+        `Config.next_id`-counter way campaigns are discovered, writing into the *same*
+        `handle_registrations` table EVM already uses — `resolveWalletForHandle` needs zero
+        changes to work for a Solana wallet. **This is what actually unblocks a Solana SSO
+        epoch engine** — the data gap is closed, independent of the engine itself existing yet.
+      - `registration-service/src/solanaAttestation.js` + `server.js` additions (new
+        `SOLANA_ATTESTOR_PRIVATE_KEY`, `/auth/x/start?network=solana`, `GET
+        /solana-attestor`, `POST /attest/solana`) give the service a working Solana signing
+        path — smoke-tested locally (wallet validation, the 503/403 gates), but never run
+        through a real X OAuth round-trip or against a deployed program.
+      - **Still missing**: a Solana epoch engine (`solanaEpochEngine.js`), a Solana-aware
+        `socialIndexer.js`, SSO's half of `solanaOnchainPoster.js`, and the frontend's "link X
+        on Solana" UI (no `connectX`-for-Solana, no `register_handle` instruction builder, no
+        `LinkXCallback`-for-Solana) — see `registration-service/README.md`'s own Solana
+        section and `contracts-solana/README.md`'s "What's NOT done yet" for the complete list.
 - [x] Build the `claim_sol`/`claim_spl` claim UI (SHO) — `api/src/claimRoutes.js`'s
       `/campaigns/:address/claim-proof` now dispatches by the campaign row's `network`,
       rebuilding the proof with `api/src/solanaMerkleTree.js` (new, same direct-port
