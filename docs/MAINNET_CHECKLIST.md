@@ -84,11 +84,31 @@ verified (built, tested, or deployed), not just written.
 - [ ] **Newly found gap**: there is no Solana Registry program (wallet↔X-handle linking) —
       blocks a Solana SSO epoch engine entirely, independent of the on-chain poster work above
       (which is otherwise ready for SSO once this exists)
-- [ ] Build the `claim_sol`/`claim_spl` claim UI (creation works; the detail page now shows a
-      clear "claiming not available yet" state instead of attempting a broken EVM claim, but
-      actual claiming needs a claim-proof API — entries/proofs now exist in `snapshots.entries`
-      via the on-chain poster work above, so this is building the lookup API/UI on top of
-      already-computed data, not starting from scratch)
+- [x] Build the `claim_sol`/`claim_spl` claim UI (SHO) — `api/src/claimRoutes.js`'s
+      `/campaigns/:address/claim-proof` now dispatches by the campaign row's `network`,
+      rebuilding the proof with `api/src/solanaMerkleTree.js` (new, same direct-port
+      convention as `shared.js`'s EVM tree) for a Solana row; wallet matching is exact
+      (case-sensitive) string equality for base58, not `toLowerCase()` (unlike EVM, base58
+      case is significant — a lower-cased comparison would silently never match). Frontend:
+      `submitShoClaimSolana()` in `public/index.html` builds and signs the `claim_sol`/
+      `claim_spl` instruction (account order/writability mirrors
+      `contracts-solana/programs/sho_solana/src/lib.rs`'s `ClaimSol`/`ClaimSpl` structs
+      exactly); `SHODetail`'s claim button now calls it for a Solana campaign instead of
+      showing "not available yet". No local eligibility pre-check exists for a Solana wallet
+      (no standings/claims aggregation endpoint for Solana yet, unlike EVM) — the claim-proof
+      API call itself is the real check, its 404 surfaced via the existing notify() path.
+      Verified: full Babel syntax check of the frontend script, plus a standalone sanity
+      script exercising the actual instruction-building logic against the pinned
+      `@solana/web3.js@1.95.3` (byte lengths, account counts, and the Anchor discriminator
+      cross-checked against the keeper's own Node-crypto implementation all matched). Never
+      run against a live wallet or deployed program.
+- [ ] *(found along the way, not yet done)* The API's own Solana SHO summary
+      (`api/src/shoRoutes.js::loadSolanaCampaignSummary`) still hardcodes `mcap: null` and has
+      no leaderboard field at all — not because the data doesn't exist (the keeper now
+      computes both internally via `solanaPriceSampler.js`/`solanaTraderIndexer.js`), but
+      because this read layer was never updated to surface them for display. Doesn't block
+      claiming (which reads `snapshots.entries` directly, independent of this), but means a
+      Solana SHO campaign's Discover/detail pages still show no mcap or leaderboard today.
 
 ## Phase 3 — Security hardening (both networks) — Stage 3, currently NOT STARTED
 

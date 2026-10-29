@@ -59,7 +59,7 @@ mock's status set (`pending`/`active`/`claimable`/`claimed`) had no slot for thi
 adds `challenge_window` rather than folding it into `claimable`, since claiming during that
 window would revert on-chain anyway.
 
-## Solana support: read path only, nothing deployed yet
+## Solana support: read path + claiming, nothing deployed yet
 
 `shoRoutes.js`/`ssoRoutes.js` now dispatch each campaign row by `row.network` ('evm' |
 'solana', set by `keeper/src/solanaCampaignIndexer.js`). A Solana row's summary comes from
@@ -67,12 +67,25 @@ decoding its Campaign PDA directly (`solanaAbis.js`), not a contract call — So
 "view function" distinct from reading account data. Every response now carries a `network`
 field so the frontend can tell which chain a campaign lives on.
 
+`claimRoutes.js`'s `/campaigns/:address/claim-proof` endpoint now serves Solana SHO rows too
+(dispatched by the campaign row's own `network`), rebuilding the proof with
+`solanaMerkleTree.js` (a direct port of `keeper/src/solanaMerkleTree.js` — see that module's
+header on why its leaf encoding differs from the EVM tree's). A Solana wallet is matched by
+exact (case-sensitive) string equality against a snapshot entry's `account`, not
+`toLowerCase()` the way an EVM address is — base58 is case-sensitive, so lower-casing would
+silently never match a real wallet.
+
 **Real gaps on the Solana side**, same spirit as "Real gaps, not invented data" above:
-`name`/`token` (symbol) are always `null` (no SPL metadata lookup implemented), `mcap` is
-always `null` (no Solana price-sampling source exists yet, see
-`keeper/src/solanaCampaignIndexer.js`'s own header), and the leaderboard for a Solana
-campaign is always empty (no Solana trade indexing exists yet either — `db.shoLeaderboard`/
-`ssoLeaderboard` query `sho_trades`/`sso_posts`, which nothing ever writes Solana rows into).
+`name`/`token` (symbol) are always `null` (no SPL metadata lookup implemented), and this
+API's own `mcap`/leaderboard fields are still always `null`/absent for a Solana row — *not*
+because the underlying data doesn't exist anymore (the keeper now computes both internally
+for its own milestone-crossing decisions, via `solanaPriceSampler.js`/`solanaTraderIndexer.js`
+and the same `sho_price_samples` table this API could read), but because this read layer's own
+`loadSolanaCampaignSummary` was never updated to surface them for display. `db.shoLeaderboard`/
+`ssoLeaderboard` still only query `sho_trades`/`sso_posts`, which nothing writes Solana rows
+into (Solana's leaderboard lives in Birdeye's API, not a local table) — a future pass should
+either query `sho_price_samples`/call `solanaTraderIndexer.js` directly here, or expose a
+keeper-computed cache, rather than re-deriving mcap from scratch a third way.
 
 A single Solana campaign failing to load (`SOLANA_RPC_URL` unset, or
 `contracts-solana/`'s programs — [still undeployed anywhere](../contracts-solana/README.md)

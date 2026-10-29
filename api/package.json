@@ -5,7 +5,7 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node test/merkleTree.test.js && node test/twap.test.js && node test/solanaAbis.test.js"
+    "test": "node test/merkleTree.test.js && node test/twap.test.js && node test/solanaAbis.test.js && node test/solanaMerkleTree.test.js"
   },
   "keywords": [],
   "author": "",
