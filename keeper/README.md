@@ -133,22 +133,31 @@ work for a Solana-registered wallet. This is the piece that actually unblocks a 
 Solana SSO epoch engine (see below). Unit-tested (`registryAbis.test.js`) — never run
 against a live program, same standing caveat as everything else Solana in this package.
 
-Still not implemented for Solana campaigns at all:
-- Claiming now works for **SHO** (`solanaOnchainPoster.js` + `api/src/claimRoutes.js` +
-  `public/index.html`'s `submitShoClaimSolana`) — see `docs/MAINNET_CHECKLIST.md`.
-- SSO epoch/root tracking — `registrySolanaIndexer.js` above removes the *data* blocker (a
-  Solana epoch engine now has somewhere to resolve a post's wallet against), but the engine
-  itself (`solanaEpochEngine.js`, a Solana-aware `socialIndexer.js`, SSO's half of
-  `solanaOnchainPoster.js`) still doesn't exist. `tickSolanaSso()` in `index.js` stays a
-  log-only placeholder until it's built. The registration-service and frontend "link X on
-  Solana" UI also don't exist yet — see `registration-service/README.md`'s own Solana
-  section for exactly what's built there vs. still missing.
+`solanaSocialIndexer.js` + `solanaEpochEngine.js` (new) close the rest of the gap:
+`tickSolanaSso()` in `index.js` now polls X for keyword matches within the campaign's
+currently-open epoch (reading epoch state from the decoded `sso_solana` Campaign account,
+same "no view function" pattern as everything else Solana), resolves each poster's wallet
+via `resolveWalletForHandle` (works out of the box for a Solana wallet, thanks to
+`registrySolanaIndexer.js`), and on an epoch's window closing, freezes the leaderboard
+(`socialScoreAggregator.js`, reused unchanged — already chain-agnostic) and builds a snapshot
+with `solanaMerkleTree.js`. `solanaOnchainPoster.js` needed **no changes** to post SSO roots
+— its `FACTORY_CONFIG` was already generic over `sho`/`sso` from when it was first built (see
+that module's own header). Claiming for SHO already works
+(`api/src/claimRoutes.js` + `public/index.html`'s `submitShoClaimSolana`); SSO claiming
+doesn't yet exist on either network (`claim_sol`/`claim_spl` aren't called anywhere for SSO
+yet — same gap EVM SSO has).
+
+Still not done: a Solana SSO claim UI, and age-gating the X search endpoint against X's
+actual rate limits/tier under real load (same untested-live caveat `socialIndexer.js` itself
+already carries for EVM).
 
 Enabling this (`SOLANA_RPC_URL` + `SHO_SOLANA_PROGRAM_ID`/`SSO_SOLANA_PROGRAM_ID`/
-`REGISTRY_SOLANA_PROGRAM_ID` + `BIRDEYE_API_KEY` + `SOLANA_KEEPER_PRIVATE_KEY` in `.env`)
+`REGISTRY_SOLANA_PROGRAM_ID` + `BIRDEYE_API_KEY` + `SOLANA_KEEPER_PRIVATE_KEY` +
+`X_BEARER_TOKEN` in `.env`)
 against real deployed programs will index campaigns, sample prices, detect milestones, post
-roots for Solana SHO, and index handle registrations —
-but claiming still won't work (see above), and SSO won't advance at all. Don't point this
+roots, index handle registrations, poll SSO posts, and detect/post epoch roots — SHO claiming
+works end to end; SSO claiming still doesn't (no UI calls `claim_sol`/`claim_spl` for SSO
+yet, on either network). Don't point this
 at a program with real funds expecting claiming to work.
 
 **Known accepted risk**: `@solana/web3.js@1.95.3` pulls in `bigint-buffer`, which

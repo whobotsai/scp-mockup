@@ -97,7 +97,7 @@ using the connected wallet -- see `../public/index.html`'s `LinkXCallback`.
 `npm test` runs the attestation + PKCE unit tests only (no `.env`/DB/network needed) -- this
 is what's actually verifiable without live infrastructure and a real X Developer App.
 
-## Solana support: signing capability built, nothing wired into a UI yet
+## Solana support: full flow built, never run end to end
 
 `contracts-solana/programs/registry_solana` (new, see that package's own README) ports
 `Registry.sol`, with one real design difference: it has no cheap way to verify an arbitrary
@@ -120,11 +120,26 @@ the 503-without-a-key and 403-without-OAuth-verification paths) — but **never 
 real X OAuth round-trip or against a deployed `registry_solana` program**, unlike the EVM flow
 documented above.
 
-**Not built yet**: the frontend side of this (`public/index.html` has no Solana "link X" page
-— no `connectX`-for-Solana redirect, no `register_handle` instruction builder, no
-`LinkXCallback`-for-Solana that calls `POST /attest/solana` and submits the co-signed
-transaction). See `contracts-solana/README.md`'s "What's NOT done yet" for the full list of
-what's still missing before a Solana wallet can actually complete a registration end-to-end.
+**Frontend is built too now**: `public/index.html`'s `Register` page has a network picker
+(EVM/Solana), `useSolanaWallet()`'s new `connectXSolana` redirects here the same way
+`connectX` does for EVM, and `LinkXCallback` has a Solana branch — `submitRegisterHandleSolana`
+fetches the attestor's pubkey (`GET /solana-attestor`), builds the `register_handle`
+instruction (account order mirrors `registry_solana`'s `RegisterHandle` struct exactly),
+compiles the unsigned transaction, posts its message to `POST /attest/solana` for the
+attestor's co-signature, attaches it (`Transaction.addSignature`), has the connected wallet
+add its own signature (`provider.signTransaction` — not `signAndSendTransaction`, which is
+a single-signer send and isn't guaranteed to preserve an already-attached second signature),
+and submits the fully-signed transaction itself. Verified as far as this sandbox allows:
+a Babel syntax check of the whole frontend script, plus a standalone script exercising the
+real two-party signing flow against the pinned `@solana/web3.js@1.95.3` + `tweetnacl` +
+`bs58` — attestor signs the exact compiled message bytes, the signature round-trips
+base58→base64 (what the frontend actually uses, `atob`-decodable without a base58 library in
+the browser) exactly as `server.js` now does, gets attached via `addSignature`, the wallet
+partially signs, and **the resulting transaction's `verifySignatures()` returns true** — the
+cryptographic shape of the whole flow is sound. **Never run through a real X OAuth round-trip,
+a real wallet extension, or against a deployed `registry_solana` program** — that needs real
+infrastructure this sandbox doesn't have, same standing caveat as every other Solana piece in
+this project.
 
 ## Deliberate scope limits
 

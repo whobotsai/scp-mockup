@@ -67,18 +67,21 @@ and doesn't prove" below for what that does and doesn't cover.
   end to end, create → discover → price → leaderboard → milestone → snapshot → post root →
   claim. See `keeper/README.md`'s "Solana support" section for the full picture and its
   caveats (none of it has ever been called against a live API or deployed program).
-- **SSO has none of the above yet, and that's now specifically blocked on `registry_solana`
-  having its own keeper/API/frontend wiring**, not on `sso_solana`'s own instructions (which
-  are as ready as `sho_solana`'s — see the comparison table above). Concretely still
-  missing: a `registrySolanaIndexer.js` (keeper-side discovery of `Registration` PDAs,
-  mirroring `solanaCampaignIndexer.js`'s `Config.next_id`-counter pattern — see
-  `registry_solana/src/state.rs`'s own `Registration` doc comment), a Solana-aware signing
-  path in `registration-service/` (the EVM attestor signs ECDSA; Solana's `register_handle`
-  needs the attestor to co-sign the transaction instead, see `registry_solana/src/lib.rs`'s
-  header), a Solana `solanaEpochEngine.js`/`solanaOnchainPoster.js` SSO path (the poster
-  plumbing is already shared/ready — see `keeper/src/solanaOnchainPoster.js` — only the
-  epoch-detection half is missing), and the frontend's own "link X account" flow extended
-  for a Solana wallet.
+- **SSO now has the same full pipeline as SHO**, closing what was previously the biggest
+  Solana gap: `registrySolanaIndexer.js` (keeper-side `Registration` PDA discovery, same
+  `Config.next_id`-counter pattern as campaigns) feeds the existing `handle_registrations`
+  table, `registration-service`'s Solana signing path (`SOLANA_ATTESTOR_PRIVATE_KEY`, the
+  attestor co-signs `register_handle` rather than signing a detached ECDSA digest — see
+  `registry_solana/src/lib.rs`'s own header for why) issues real co-signatures, and
+  `public/index.html`'s `Register`/`LinkXCallback` pages drive the whole two-party signing
+  flow client-side. `solanaSocialIndexer.js` + `solanaEpochEngine.js` poll X and detect
+  closed epochs the same way `solanaMilestoneEngine.js` does for SHO; `solanaOnchainPoster.js`
+  needed **zero changes** to post SSO roots — it was already generic over `sho`/`sso` from
+  when it was first built. See `keeper/README.md` and `registration-service/README.md`'s own
+  "Solana support" sections for the full picture and every caveat (none of this has ever run
+  against a live program, a live X API, or a real wallet extension — see each module's own
+  header). **Still missing on both chains**: an SSO claim UI (`claim_sol`/`claim_spl` aren't
+  called anywhere for SSO yet, EVM included).
 - **No TS test suite yet** for any of the three programs (the equivalent of
   `contracts/test/{sho,sso}.test.js` / `test/helpers/{deploy,merkle,harness}.js`, run with
   `anchor test` against a local validator).

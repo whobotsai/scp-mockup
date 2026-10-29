@@ -590,6 +590,9 @@ const SCP_CONFIG = Object.assign({
   SOLANA_EXPLORER_URL: 'https://explorer.solana.com',
   SHO_SOLANA_PROGRAM_ID: 'Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS',
   SSO_SOLANA_PROGRAM_ID: '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin',
+  // Matches registry_solana's own placeholder declare_id!() -- same "not a real deployed
+  // program" caveat as the two above.
+  REGISTRY_SOLANA_PROGRAM_ID: 'E6pYGM6cDh1WqLjkDRMfvwMMGBD6CWQSfA3msuNYMy3Y',
   // No SPL stablecoin configured yet, same reasoning as USDC_ADDRESS above.
   SOLANA_USDC_MINT: '',
 }, window.SCP_CONFIG || {});
@@ -944,6 +947,135 @@ async function submitShoClaimSolana({provider, campaignAddress, milestoneIndex, 
   }
 
   const signature = await signAndSendSolanaTx(provider, [ix]);
+  return {signature};
+}
+
+/* ===================== REGISTRY (registry_solana) ===================== */
+// Solana counterpart of the EVM Registry.registerHandle() call LinkXCallback makes below.
+// registry_solana's register_handle needs the attestor to co-sign the same transaction
+// (see contracts-solana/programs/registry_solana/src/lib.rs's own header for why, instead of
+// an on-chain Ed25519 signature check) -- so unlike every other Solana write in this file,
+// this one is a genuine two-party flow: this code builds the transaction and gets the
+// attestor's signature from ../registration-service's POST /attest/solana *before* the
+// connected wallet signs and sends it.
+
+// Decodes registry_solana's Config account: bump(1) + authority(32) + attestor(32) +
+// next_registration_id(8 LE) after the 8-byte Anchor discriminator -- a different layout
+// from fetchSolanaConfig's sho_solana/sso_solana Config (treasury/keeper fields instead),
+// so this can't reuse that function.
+async function fetchRegistryConfig(programId){
+  const connection = solanaConnection();
+  const configPda = solanaPda(programId, [new TextEncoder().encode('config')]);
+  const info = await connection.getAccountInfo(configPda);
+  if(!info) throw new Error('registry_solana\'s Config account was not found on devnet -- has initialize_config been called yet?');
+  const d = info.data;
+  const authority = new window.solanaWeb3.PublicKey(d.slice(9,41));
+  const attestor = new window.solanaWeb3.PublicKey(d.slice(41,73));
+  const nextRegistrationId = new DataView(d.buffer, d.byteOffset+73, 8).getBigUint64(0,true);
+  return {configPda, authority, attestor, nextRegistrationId};
+}
+
+// Decodes a HandleLink account (bump(1) + wallet(32) + x_handle(Borsh String) + linked_at(8))
+// if one exists for `wallet` -- used to show "already linked" status in the UI, the Solana
+// counterpart of reading Registry.handleOf(wallet) on EVM. Returns null, not an error, when
+// the wallet hasn't registered yet (the normal case for most wallets, same "account not
+// found isn't an error" posture this file uses for every other optional Solana lookup).
+async function fetchSolanaHandleLink(programId, wallet){
+  const connection = solanaConnection();
+  const handleLinkPda = solanaPda(programId, [new TextEncoder().encode('handle'), wallet.toBytes()]);
+  const info = await connection.getAccountInfo(handleLinkPda);
+  if(!info) return null;
+  const d = info.data;
+  const xHandleLen = new DataView(d.buffer, d.byteOffset+41, 4).getUint32(0,true);
+  const xHandle = new TextDecoder().decode(d.slice(45, 45+xHandleLen));
+  return {xHandle};
+}
+
+// Direct port of registry_solana/src/state.rs::normalized_handle_key -- ASCII-lowercase, then
+// Keccak-256 (via the already-vendored ethers.js, not Web Crypto's sha256 -- Solana's native
+// keccak syscall is real Keccak-256, not NIST SHA3-256, and ethers.keccak256 is a raw
+// Keccak-256 primitive independent of any EVM-specific encoding, same reuse this project's
+// Node code already makes in solanaMerkleTree.js).
+function normalizedHandleKeyBytes(xHandle){
+  const lower = xHandle.toLowerCase();
+  const hashHex = window.ethers.keccak256(new TextEncoder().encode(lower));
+  return hexToBytes32(hashHex);
+}
+
+function base64ToBytes(b64){
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function bytesToBase64(bytes){
+  let bin = '';
+  for(const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+/// Builds the register_handle instruction. Account order/writability mirrors
+/// contracts-solana/programs/registry_solana/src/lib.rs's RegisterHandle struct exactly:
+/// [wallet(signer,writable payer), attestor(signer), config(writable), handle_link(init),
+/// wallet_of_handle(init), registration(init), system_program].
+async function buildRegisterHandleInstruction({programId, wallet, attestor, configPda, nextRegistrationId, xHandle}){
+  const handleLinkPda = solanaPda(programId, [new TextEncoder().encode('handle'), wallet.toBytes()]);
+  const walletOfHandlePda = solanaPda(programId, [new TextEncoder().encode('wallet_of_handle'), normalizedHandleKeyBytes(xHandle)]);
+  const idBuf = borsh.u64(nextRegistrationId);
+  const registrationPda = solanaPda(programId, [new TextEncoder().encode('registration'), configPda.toBytes(), idBuf]);
+
+  return buildAnchorIx({
+    programId, name:'register_handle', args: [borsh.string(xHandle)],
+    keys: [
+      acct(wallet, true, true),
+      acct(attestor, true, false),
+      acct(configPda, false, true),
+      acct(handleLinkPda, false, true),
+      acct(walletOfHandlePda, false, true),
+      acct(registrationPda, false, true),
+      acct(window.solanaWeb3.SystemProgram.programId, false, false),
+    ],
+  });
+}
+
+/// Orchestrates the full two-party flow: build the unsigned transaction, get the attestor's
+/// co-signature from the registration service (which only hands one back for a (wallet,
+/// xHandle) pair it just verified via OAuth -- see server.js's POST /attest/solana), attach
+/// it, have the connected wallet add its own signature via provider.signTransaction (not
+/// signAndSendTransaction -- that method is for a single-signer send and isn't guaranteed to
+/// preserve an already-attached second signature the way signTransaction's "just add mine"
+/// contract does), then send the fully-signed transaction ourselves.
+async function submitRegisterHandleSolana({provider, wallet, xHandle}){
+  const programId = SCP_CONFIG.REGISTRY_SOLANA_PROGRAM_ID;
+  const connection = solanaConnection();
+
+  const attestorRes = await fetch(`${SCP_CONFIG.REGISTRATION_SERVICE_URL}/solana-attestor`);
+  const attestorBody = await attestorRes.json();
+  if(!attestorRes.ok) throw new Error(attestorBody.error || 'failed to fetch the Solana attestor pubkey');
+  const attestorPubkey = new window.solanaWeb3.PublicKey(attestorBody.pubkey);
+
+  const {configPda, nextRegistrationId} = await fetchRegistryConfig(programId);
+  const ix = await buildRegisterHandleInstruction({programId, wallet, attestor: attestorPubkey, configPda, nextRegistrationId, xHandle});
+
+  const tx = new window.solanaWeb3.Transaction();
+  tx.add(ix);
+  tx.feePayer = wallet;
+  const {blockhash, lastValidBlockHeight} = await connection.getLatestBlockhash();
+  tx.recentBlockhash = blockhash;
+
+  const messageBytes = tx.compileMessage().serialize();
+  const attestRes = await fetch(`${SCP_CONFIG.REGISTRATION_SERVICE_URL}/attest/solana`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({wallet: wallet.toBase58(), xHandle, messageBase64: bytesToBase64(messageBytes)}),
+  });
+  const attestBody = await attestRes.json();
+  if(!attestRes.ok) throw new Error(attestBody.error || 'failed to get the attestor\'s co-signature');
+
+  tx.addSignature(attestorPubkey, base64ToBytes(attestBody.signatureBase64));
+
+  const signedTx = await provider.signTransaction(tx);
+  const signature = await connection.sendRawTransaction(signedTx.serialize());
+  await connection.confirmTransaction({signature, blockhash, lastValidBlockHeight}, 'confirmed');
   return {signature};
 }
 
@@ -1317,7 +1449,16 @@ function useSolanaWallet(){
     setPublicKey(null);
   }, []);
 
-  return {publicKey, connecting, connectSolanaWallet, disconnect, provider: window.solana};
+  // Solana counterpart of useWallet()'s connectX: kicks off the same OAuth 2.0 (PKCE)
+  // redirect to ../registration-service, just tagged ?network=solana so that service
+  // validates a base58 address and takes the co-signer attestation path instead of signing a
+  // fixed digest -- see registration-service/README.md's own Solana section.
+  const connectXSolana = useCallback(()=>{
+    if(!publicKey) return;
+    window.location.href = `${SCP_CONFIG.REGISTRATION_SERVICE_URL}/auth/x/start?network=solana&wallet=${publicKey.toBase58()}`;
+  }, [publicKey]);
+
+  return {publicKey, connecting, connectSolanaWallet, connectXSolana, disconnect, provider: window.solana};
 }
 
 /* ===================== ICONS ===================== */
@@ -2934,26 +3075,75 @@ function CreateWizard({kind, go, user, solanaUser, notify}){
 
 /* ===================== REGISTER (SSO) ===================== */
 
-function Register({go, user, notify}){
+function Register({go, user, solanaUser, notify}){
+  const [network, setNetwork] = useState('evm');
+  const isSolana = network==='solana';
+
+  // Solana counterpart of user.xhandle -- no live-updating hook for it the way the EVM
+  // wallet exposes refreshXHandle(), so this re-checks on demand whenever the connected
+  // Solana wallet changes.
+  const [solanaLink, setSolanaLink] = useState(null); // {xHandle} | null | undefined(loading)
+  useEffect(()=>{
+    if(!solanaUser.publicKey){ setSolanaLink(null); return; }
+    let cancelled = false;
+    fetchSolanaHandleLink(SCP_CONFIG.REGISTRY_SOLANA_PROGRAM_ID, solanaUser.publicKey)
+      .then(link=>{ if(!cancelled) setSolanaLink(link); })
+      .catch(()=>{ if(!cancelled) setSolanaLink(null); });
+    return ()=>{ cancelled = true; };
+  }, [solanaUser.publicKey]);
+
   return (
     <div className="page">
       <div className="wrap" style={{maxWidth:520}}>
         <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand</button> / Register</div>
         <h1 style={{marginBottom:8}}>Link your X account</h1>
-        <p className="camp-meta" style={{marginBottom:28}}>One registration covers every Strong Shill Offering campaign you ever participate in &mdash; this calls Registry.registerHandle(...) once, on-chain.</p>
-        <div className="panel">
-          <div className="field">
-            <label>1. Connect wallet</label>
-            {user.wallet ? <Tag kind="sho" icon={IcoCheckCirc}>{shortAddr(user.wallet)} connected</Tag> : <Btn kind="outline" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>}
+        <p className="camp-meta" style={{marginBottom:20}}>One registration covers every Strong Shill Offering campaign you ever participate in on that network &mdash; this links your wallet to your X handle once, on-chain.</p>
+
+        <div className="panel" style={{marginBottom:20}}>
+          <div className="eyebrow" style={{marginBottom:10}}>Network</div>
+          <div className="opt-row">
+            <button className={`opt-btn ${!isSolana?'sel':''}`} onClick={()=>setNetwork('evm')}>{SCP_CONFIG.CHAIN_NAME} (EVM)</button>
+            <button className={`opt-btn ${isSolana?'sel':''}`} onClick={()=>setNetwork('solana')}>Solana ({SCP_CONFIG.SOLANA_CLUSTER})</button>
           </div>
-          <div className="field">
-            <label>2. Connect X account</label>
-            {user.xhandle ? <Tag kind="sso" icon={IcoCheckCirc}>{user.xhandle} linked on-chain</Tag> : <Btn kind="outline" icon={IcoX} onClick={user.connectX} disabled={!user.wallet}>Connect X (OAuth)</Btn>}
-            {!user.wallet && <div className="help">Connect a wallet first.</div>}
-            {user.wallet && !user.xhandle && <div className="help">Redirects to X to sign in, then comes back here to confirm the on-chain link with one more wallet signature.</div>}
-          </div>
-          <Btn block icon={IcoShield} disabled={!user.wallet || !user.xhandle} onClick={()=>go('/sso')}>{user.xhandle ? 'Browse SSO campaigns' : 'Complete the steps above'}</Btn>
+          {isSolana && (
+            <div className="help" style={{marginTop:10}}>
+              Solana support is new and a wallet can link exactly one X handle, ever &mdash;
+              there&rsquo;s no &ldquo;switch handle&rdquo; path yet (see
+              contracts-solana/programs/registry_solana&rsquo;s README). The on-chain program
+              has never been deployed anywhere real.
+            </div>
+          )}
         </div>
+
+        {isSolana ? (
+          <div className="panel">
+            <div className="field">
+              <label>1. Connect Solana wallet</label>
+              {solanaUser.publicKey ? <Tag kind="sho" icon={IcoCheckCirc}>{shortAddr(solanaUser.publicKey.toBase58())} connected</Tag> : <Btn kind="outline" icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>Connect wallet</Btn>}
+            </div>
+            <div className="field">
+              <label>2. Connect X account</label>
+              {solanaLink ? <Tag kind="sso" icon={IcoCheckCirc}>{solanaLink.xHandle} linked on-chain</Tag> : <Btn kind="outline" icon={IcoX} onClick={solanaUser.connectXSolana} disabled={!solanaUser.publicKey}>Connect X (OAuth)</Btn>}
+              {!solanaUser.publicKey && <div className="help">Connect a Solana wallet first.</div>}
+              {solanaUser.publicKey && !solanaLink && <div className="help">Redirects to X to sign in, then comes back here to finish linking with one more wallet signature.</div>}
+            </div>
+            <Btn block icon={IcoShield} disabled={!solanaUser.publicKey || !solanaLink} onClick={()=>go('/sso')}>{solanaLink ? 'Browse SSO campaigns' : 'Complete the steps above'}</Btn>
+          </div>
+        ) : (
+          <div className="panel">
+            <div className="field">
+              <label>1. Connect wallet</label>
+              {user.wallet ? <Tag kind="sho" icon={IcoCheckCirc}>{shortAddr(user.wallet)} connected</Tag> : <Btn kind="outline" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>}
+            </div>
+            <div className="field">
+              <label>2. Connect X account</label>
+              {user.xhandle ? <Tag kind="sso" icon={IcoCheckCirc}>{user.xhandle} linked on-chain</Tag> : <Btn kind="outline" icon={IcoX} onClick={user.connectX} disabled={!user.wallet}>Connect X (OAuth)</Btn>}
+              {!user.wallet && <div className="help">Connect a wallet first.</div>}
+              {user.wallet && !user.xhandle && <div className="help">Redirects to X to sign in, then comes back here to confirm the on-chain link with one more wallet signature.</div>}
+            </div>
+            <Btn block icon={IcoShield} disabled={!user.wallet || !user.xhandle} onClick={()=>go('/sso')}>{user.xhandle ? 'Browse SSO campaigns' : 'Complete the steps above'}</Btn>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2964,14 +3154,27 @@ function Register({go, user, notify}){
 // FRONTEND_URL configured -- see its server.js) after a completed OAuth round-trip. Finishes
 // the on-chain half of PRD §12.3-12.4 that service never does itself: submitting
 // Registry.registerHandle(xHandle, attestation) using the connected wallet.
-function LinkXCallback({go, user, notify}){
+function LinkXCallback({go, user, solanaUser, notify}){
   const params = useMemo(()=> parseQuery((window.location.hash.split('?')[1])||''), []);
-  const {wallet: startedWallet, handle, attestation, error: oauthError} = params;
+  const {wallet: startedWallet, handle, attestation, network, error: oauthError} = params;
+  const isSolana = network==='solana';
   const [submitting, setSubmitting] = useState(false);
 
+  // EVM: the registration service already handed back a ready-to-submit attestation
+  // (Registry.registerHandle's own ECDSA check verifies it on-chain). Solana: no attestation
+  // comes back at this stage -- submitRegisterHandleSolana builds the transaction itself,
+  // fetches the attestor's co-signature from POST /attest/solana (gated on the OAuth-verified
+  // marker the service's callback just recorded), and submits -- see that function's own
+  // header in the Solana helpers section.
   const confirm = async ()=>{
     setSubmitting(true);
     try {
+      if(isSolana){
+        await submitRegisterHandleSolana({provider: solanaUser.provider, wallet: solanaUser.publicKey, xHandle: handle});
+        notify(`${handle} linked on-chain.`);
+        go('/profile');
+        return;
+      }
       const signer = await user.getSigner();
       const registry = new window.ethers.Contract(SCP_CONFIG.REGISTRY_ADDRESS, REGISTRY_ABI, signer);
       const tx = await registry.registerHandle(handle, attestation);
@@ -2987,6 +3190,9 @@ function LinkXCallback({go, user, notify}){
     }
   };
 
+  const connectedWallet = isSolana ? (solanaUser.publicKey ? solanaUser.publicKey.toBase58() : null) : user.wallet;
+  const walletMismatch = startedWallet && connectedWallet && connectedWallet.toLowerCase()!==String(startedWallet).toLowerCase();
+
   return (
     <div className="page">
       <div className="wrap" style={{maxWidth:520}}>
@@ -2995,20 +3201,20 @@ function LinkXCallback({go, user, notify}){
         <div className="panel">
           {oauthError ? (
             <div className="you-empty">X sign-in didn&rsquo;t complete: {oauthError}. <button style={{background:'none',border:'none',color:'var(--accent)',textDecoration:'underline',cursor:'pointer',font:'inherit',padding:0}} onClick={()=>go('/register')}>Try again</button></div>
-          ) : !handle || !attestation ? (
+          ) : !handle || (!isSolana && !attestation) ? (
             <div className="you-empty">Nothing to confirm here &mdash; this page only makes sense right after returning from X sign-in. <button style={{background:'none',border:'none',color:'var(--accent)',textDecoration:'underline',cursor:'pointer',font:'inherit',padding:0}} onClick={()=>go('/register')}>Start registration</button></div>
-          ) : !user.wallet ? (
+          ) : !connectedWallet ? (
             <div className="you-empty">
               Reconnect the wallet you started with ({shortAddr(startedWallet)}) to finish linking.
-              <div style={{marginTop:12}}><Btn size="sm" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn></div>
+              <div style={{marginTop:12}}><Btn size="sm" icon={IcoWallet} onClick={isSolana?solanaUser.connectSolanaWallet:user.connectWallet}>Connect wallet</Btn></div>
             </div>
-          ) : startedWallet && user.wallet.toLowerCase()!==startedWallet.toLowerCase() ? (
-            <div className="you-empty">This link was started from {shortAddr(startedWallet)}, but {shortAddr(user.wallet)} is connected now. Switch wallets and reload to continue.</div>
+          ) : walletMismatch ? (
+            <div className="you-empty">This link was started from {shortAddr(startedWallet)}, but {shortAddr(connectedWallet)} is connected now. Switch wallets and reload to continue.</div>
           ) : (
             <>
-              <div className="kv"><span className="k">Wallet</span><span className="v">{shortAddr(user.wallet)}</span></div>
+              <div className="kv"><span className="k">Wallet</span><span className="v">{shortAddr(connectedWallet)}</span></div>
               <div className="kv"><span className="k">X handle</span><span className="v">{handle}</span></div>
-              <p className="camp-meta" style={{margin:'12px 0 16px'}}>X verified this handle for your wallet. One more signature submits Registry.registerHandle(...) on-chain to finish linking.</p>
+              <p className="camp-meta" style={{margin:'12px 0 16px'}}>X verified this handle for your wallet. {isSolana ? 'One more signature co-signs with the attestor on-chain to finish linking.' : 'One more signature submits Registry.registerHandle(...) on-chain to finish linking.'}</p>
               <Btn block icon={IcoShield} disabled={submitting} onClick={confirm}>{submitting?'Confirming…':'Confirm on-chain'}</Btn>
             </>
           )}
@@ -3322,8 +3528,8 @@ function App(){
   else if(parts[0]==='sso' && parts[1]) view = <SSODetail id={parts[1]} go={go} user={user} notify={notify}/>;
   else if(parts[0]==='sho') view = <Discover kind="sho" go={go}/>;
   else if(parts[0]==='sso') view = <Discover kind="sso" go={go}/>;
-  else if(parts[0]==='register') view = <Register go={go} user={user} notify={notify}/>;
-  else if(parts[0]==='link-x') view = <LinkXCallback go={go} user={user} notify={notify}/>;
+  else if(parts[0]==='register') view = <Register go={go} user={user} solanaUser={solanaUser} notify={notify}/>;
+  else if(parts[0]==='link-x') view = <LinkXCallback go={go} user={user} solanaUser={solanaUser} notify={notify}/>;
   else if(parts[0]==='profile') view = <Profile go={go} user={user} notify={notify}/>;
   else view = <Landing go={go}/>;
 

@@ -8,6 +8,7 @@ require("dotenv").config();
 const express = require("express");
 const { ethers } = require("ethers");
 const { PublicKey } = require("@solana/web3.js");
+const bs58 = require("bs58");
 const { randomState, generateVerifier, challengeFor } = require("./pkce");
 const { buildAuthorizeUrl, exchangeCodeForToken, fetchUserHandle } = require("./xOAuth");
 const { signAttestation } = require("./attestation");
@@ -239,7 +240,12 @@ app.post("/attest/solana", (req, res) => {
   try {
     const messageBytes = Buffer.from(messageBase64, "base64");
     const signature = signSolanaMessage(solanaAttestorKeypair, messageBytes);
-    res.json({ signature, attestorPubkey: solanaAttestorKeypair.publicKey.toBase58() });
+    // Both encodings of the same 64 signature bytes: base58 (Solana-ecosystem-conventional,
+    // what signSolanaMessage itself returns) and base64 (what the frontend actually uses --
+    // avoids needing a base58 decoder in the browser just for this one value, when base64
+    // decoding is already a one-line browser built-in, atob).
+    const signatureBase64 = bs58.decode(signature).toString("base64");
+    res.json({ signature, signatureBase64, attestorPubkey: solanaAttestorKeypair.publicKey.toBase58() });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: `Failed to sign: ${e.message}` });

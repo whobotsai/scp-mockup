@@ -100,11 +100,26 @@ verified (built, tested, or deployed), not just written.
         /solana-attestor`, `POST /attest/solana`) give the service a working Solana signing
         path — smoke-tested locally (wallet validation, the 503/403 gates), but never run
         through a real X OAuth round-trip or against a deployed program.
-      - **Still missing**: a Solana epoch engine (`solanaEpochEngine.js`), a Solana-aware
-        `socialIndexer.js`, SSO's half of `solanaOnchainPoster.js`, and the frontend's "link X
-        on Solana" UI (no `connectX`-for-Solana, no `register_handle` instruction builder, no
-        `LinkXCallback`-for-Solana) — see `registration-service/README.md`'s own Solana
-        section and `contracts-solana/README.md`'s "What's NOT done yet" for the complete list.
+      - **Now also built**: `keeper/src/solanaSocialIndexer.js` + `solanaEpochEngine.js`
+        (X post polling + epoch-close snapshot computation, mirroring `solanaMilestoneEngine.js`'s
+        pattern) and the frontend's full "link X on Solana" flow
+        (`useSolanaWallet().connectXSolana`, `Register`'s network picker,
+        `LinkXCallback`'s Solana branch calling the new `submitRegisterHandleSolana()` —
+        builds the `register_handle` transaction, gets the attestor's co-signature from
+        `POST /attest/solana`, attaches it, has the wallet add its own signature via
+        `provider.signTransaction`, submits). `solanaOnchainPoster.js` needed **zero changes**
+        for SSO root posting — already generic over `sho`/`sso`.
+      - Verified: Babel syntax check of the whole frontend script; a standalone Node script
+        exercising the real two-party signing flow against the pinned
+        `@solana/web3.js@1.95.3` + `tweetnacl` + `bs58` (attestor signs the exact compiled
+        message, base58↔base64 round-trip matches what server.js/the frontend actually use,
+        `Transaction.addSignature` + wallet partial-sign + `verifySignatures()` all check out
+        true); a separate script cross-checking `register_handle`'s Keccak handle-normalization
+        hash (case-insensitivity, exact byte match against a hand-computed reference).
+        **Never run** through a real X OAuth round-trip, a real wallet extension, or against a
+        deployed `registry_solana` program.
+      - **Still missing**: an SSO claim UI (`claim_sol`/`claim_spl` aren't called anywhere for
+        SSO yet, on either network — same gap EVM SSO already has).
 - [x] Build the `claim_sol`/`claim_spl` claim UI (SHO) — `api/src/claimRoutes.js`'s
       `/campaigns/:address/claim-proof` now dispatches by the campaign row's `network`,
       rebuilding the proof with `api/src/solanaMerkleTree.js` (new, same direct-port

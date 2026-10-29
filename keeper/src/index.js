@@ -24,8 +24,10 @@ const { checkSolanaMilestones } = require("./solanaMilestoneEngine");
 const { pollNewSsoCampaigns } = require("./ssoCampaignIndexer");
 const { pollNewRegistrations } = require("./registrationIndexer");
 const { pollPostsForCampaign } = require("./socialIndexer");
+const { pollPostsForSolanaCampaign } = require("./solanaSocialIndexer");
 const { epochScoresForCampaign } = require("./socialScoreAggregator");
 const { checkEpochs } = require("./epochEngine");
+const { checkSolanaEpochs } = require("./solanaEpochEngine");
 const { publishPendingSnapshots, DEFAULT_PUBLISH_INTERVAL_MS } = require("./snapshotPublisher");
 const { postPendingRoots } = require("./onchainPoster");
 const { postPendingSolanaRoots, loadKeeperKeypair } = require("./solanaOnchainPoster");
@@ -72,12 +74,26 @@ async function tickSolanaSho(connection, c) {
   }
 }
 
-// Solana SSO: nothing implemented yet beyond discovery (no epoch/root/claim mechanics ported
-// to the keeper side) -- a log line here is a deliberate placeholder, not a bug, so a
-// discovered Solana SSO campaign isn't silently ignored in the logs while the rest of the
-// pipeline catches up.
-async function tickSolanaSso(c) {
-  console.log(`[keeper] Solana SSO campaign ${c.campaign_address}: epoch/root tracking not implemented yet -- skipping.`);
+// Solana SSO: post polling + epoch detection + snapshot computation now mirror the EVM path
+// (solanaSocialIndexer.js/solanaEpochEngine.js), on top of registrySolanaIndexer.js already
+// populating handle_registrations for Solana wallets. Posting the resulting snapshot
+// on-chain is solanaOnchainPoster.js's job (already generic over sho/sso -- see its own
+// FACTORY_CONFIG), not done here. X_BEARER_TOKEN is optional, same posture as everything
+// else: post polling simply stays off without it.
+async function tickSolanaSso(connection, c) {
+  const epochIndex = await pollPostsForSolanaCampaign(connection, c);
+  if (epochIndex !== null) {
+    const leaderboard = await epochScoresForCampaign(c.campaign_address, epochIndex);
+    console.log(
+      `[socialScoreAggregator] ${c.campaign_address} epoch ${epochIndex}: ${leaderboard.length} eligible account(s)` +
+        (leaderboard.length ? `, top: ${leaderboard[0].wallet} (${leaderboard[0].score.toFixed(2)})` : "")
+    );
+  }
+  try {
+    await checkSolanaEpochs(connection, c);
+  } catch (e) {
+    console.error(`[solanaEpochEngine] check failed for ${c.campaign_address}:`, e.message);
+  }
 }
 
 async function tickSso(provider, c) {
@@ -133,7 +149,7 @@ async function tick(provider, keeperWallet, publishIntervalMs, solanaConnection,
     try {
       if (c.network === "solana") {
         if (c.factory === "sso") {
-          await tickSolanaSso(c);
+          await tickSolanaSso(solanaConnection, c);
         } else {
           await tickSolanaSho(solanaConnection, c);
         }
