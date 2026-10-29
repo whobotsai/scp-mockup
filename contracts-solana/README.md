@@ -82,9 +82,17 @@ and doesn't prove" below for what that does and doesn't cover.
   against a live program, a live X API, or a real wallet extension — see each module's own
   header). **Still missing on both chains**: an SSO claim UI (`claim_sol`/`claim_spl` aren't
   called anywhere for SSO yet, EVM included).
-- **No TS test suite yet** for any of the three programs (the equivalent of
-  `contracts/test/{sho,sso}.test.js` / `test/helpers/{deploy,merkle,harness}.js`, run with
-  `anchor test` against a local validator).
+- **TS test suite written, never run.** `tests/sho.ts`, `tests/sso.ts`, `tests/registry.ts`
+  (plus `tests/helpers/merkle.ts`) mirror `contracts/test/{sho,sso,registry}.test.js`'s
+  scenario coverage, using `solana-bankrun`/`anchor-bankrun` instead of a real
+  `solana-test-validator` (faster, and gives direct `context.setClock()` time-travel for the
+  24h challenge windows and epoch end times — there's no EVM-style `evm_increaseTime` RPC on
+  Solana). They type-check cleanly against temporary IDL stubs (`npx tsc --noEmit`), which
+  only proves the TS itself is well-typed — it proves nothing about whether any instruction
+  actually behaves correctly, since running them for real requires `anchor build` to have
+  generated the real `target/idl/*.json` / `target/deploy/*.so` files these tests load, which
+  this sandbox cannot produce (see "What `cargo check` passed does and doesn't prove" below).
+  Expect real bugs once a real toolchain actually runs `anchor test` against them.
 - **Never built to BPF/SBF, never deployed anywhere, not even localnet.**
 
 ## What `cargo check` passed does and doesn't prove
@@ -111,11 +119,11 @@ egress policy — only `crates.io`'s actual package hosts, `index.crates.io` /
    `[programs.localnet]` entry. The placeholders currently in place (`Fg6PaFp...` for
    `sho_solana`, `9xQeWvG8...` for `sso_solana`, `E6pYGM6c...` for `registry_solana`) are
    **not** keys anyone controls, and must not be used past localnet testing.
-2. Write `tests/sho.ts` and `tests/sso.ts` mirroring `contracts/test/{sho,sso}.test.js`'s
-   scenarios (happy-path SOL/SPL campaigns, fee split, milestone/epoch reach + challenge-
-   window correction + elapsed-window rejection, valid/invalid/double claim, non-keeper
-   rejection, and — SSO-specific — the epoch-not-yet-ended rejection) and run them against
-   `anchor test`'s local validator.
+2. Run `npm install` in this directory, then `npm test` (`ts-mocha` over
+   `tests/sho.ts`/`tests/sso.ts`/`tests/registry.ts`, which `anchor test` also invokes per
+   `Anchor.toml`'s `[scripts] test` entry) once step 1's `anchor build` has produced
+   `target/idl/*.json` and `target/deploy/*.so` for all three programs — fix whatever it
+   reveals, since none of this has ever actually executed.
 3. Decide the keeper/API/frontend work needed to make either campaign type actually usable
    end-to-end on Solana (a deployed program nobody can create a real campaign against yet
    isn't itself a shippable milestone) — likely shared infrastructure (a Solana RPC client,

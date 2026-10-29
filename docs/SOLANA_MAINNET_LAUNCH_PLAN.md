@@ -39,12 +39,16 @@ hidden — read the "Decide now" calls under P1 before committing to a date.
 - [ ] `anchor keys list`; replace every placeholder `declare_id!()` (`Fg6PaFp...` for SHO,
       `9xQeWvG8...` for SSO, `E6pYGM6c...` for Registry) and `Anchor.toml`'s
       `[programs.localnet]` entries with the real generated ids.
-- [ ] Write `tests/sho.ts`, `tests/sso.ts`, `tests/registry.ts` — happy-path SOL/SPL
+- [x] Write `tests/sho.ts`, `tests/sso.ts`, `tests/registry.ts` — happy-path SOL/SPL
       campaigns, fee split, milestone/epoch reach + challenge-window correction + elapsed-
       window rejection, valid/invalid/double claim, non-keeper rejection, SSO's
       epoch-not-yet-ended check, Registry's co-signer registration + duplicate-handle
-      rejection. This is the first real correctness check this code has ever had — budget
-      real time to fix what it finds, not just to write it.
+      rejection. Written against `solana-bankrun`/`anchor-bankrun` (see
+      `contracts-solana/README.md`'s updated caveats) and type-checked clean with `tsc
+      --noEmit`, but **never executed** — that only proves the TS compiles, not that any
+      instruction is actually correct. This is still the first real correctness check this
+      code will have had once step below actually runs it — budget real time to fix what it
+      finds, not just to have written it.
 - [ ] `anchor test` against a local validator. **Fix everything it surfaces before moving
       on** — nothing past this point is trustworthy until this is green.
 - [ ] Deploy all three programs to **devnet**. `initialize_config` for each.
