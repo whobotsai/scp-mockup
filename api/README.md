@@ -75,17 +75,22 @@ exact (case-sensitive) string equality against a snapshot entry's `account`, not
 `toLowerCase()` the way an EVM address is — base58 is case-sensitive, so lower-casing would
 silently never match a real wallet.
 
-**Real gaps on the Solana side**, same spirit as "Real gaps, not invented data" above:
-`name`/`token` (symbol) are always `null` (no SPL metadata lookup implemented), and this
-API's own `mcap`/leaderboard fields are still always `null`/absent for a Solana row — *not*
-because the underlying data doesn't exist anymore (the keeper now computes both internally
-for its own milestone-crossing decisions, via `solanaPriceSampler.js`/`solanaTraderIndexer.js`
-and the same `sho_price_samples` table this API could read), but because this read layer's own
-`loadSolanaCampaignSummary` was never updated to surface them for display. `db.shoLeaderboard`/
-`ssoLeaderboard` still only query `sho_trades`/`sso_posts`, which nothing writes Solana rows
-into (Solana's leaderboard lives in Birdeye's API, not a local table) — a future pass should
-either query `sho_price_samples`/call `solanaTraderIndexer.js` directly here, or expose a
-keeper-computed cache, rather than re-deriving mcap from scratch a third way.
+A Solana SHO row's `mcap` and leaderboard (`topLeaderboard` / `GET .../leaderboard`) are now
+real for Solana too: `solanaTokenTwapMcap()` reads the same `sho_price_samples` table
+`solanaPriceSampler.js` writes into (chain-agnostic `timeWeightedAveragePrice` math, same as
+EVM) plus the tracked mint's on-chain supply (`solanaAbis.js::decodeMint`); `solanaLeaderboard()`
+calls the new `solanaTraderIndexer.js` (a direct port of `keeper/src/solanaTraderIndexer.js`,
+Birdeye-based — see that module's header) instead of `db.shoLeaderboard`, which only ever
+queried `sho_trades` (a table nothing writes Solana rows into). Both need
+`BIRDEYE_API_KEY`/`SOLANA_RPC_URL` configured on this API instance — unset means `mcap`
+stays `null`/the leaderboard stays empty, same "optional, stays off without it" posture as
+every other env-gated piece of this project, not a crash.
+
+**Remaining real gaps on the Solana side**: `name`/`token` (symbol) are still `null` for a
+mint with no Metaplex metadata account (not a bug — a genuinely unminted field, same honest
+"not invented" posture as everywhere else in this API). SSO has no Solana leaderboard
+equivalent at all — blocked on a separate, bigger gap (no Solana Registry program exists for
+wallet↔X-handle linking, see `keeper/README.md`), not on anything fixable in this API alone.
 
 A single Solana campaign failing to load (`SOLANA_RPC_URL` unset, or
 `contracts-solana/`'s programs — [still undeployed anywhere](../contracts-solana/README.md)

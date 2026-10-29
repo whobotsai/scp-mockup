@@ -10,6 +10,7 @@ const { PublicKey } = require("@solana/web3.js");
 const db = require("./db");
 const { ERC20_ABI, SHO_CAMPAIGN_ABI, MILESTONE_USD_THRESHOLDS } = require("./abis");
 const solanaAbis = require("./solanaAbis");
+const { netBuyVolumeForSolanaToken } = require("./solanaTraderIndexer");
 const { timeWeightedAveragePrice, TWAP_WINDOW_MS, daysLeft } = require("./shared");
 
 const TIER_LABELS = ["100K", "250K", "1M", "5M"];
@@ -24,6 +25,38 @@ function router(provider, solanaConnection) {
     const erc20 = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
     const totalSupply = await erc20.totalSupply();
     return price * Number(ethers.formatUnits(totalSupply, 18));
+  }
+
+  /// Solana counterpart of tokenTwapMcap: same TWAP math (timeWeightedAveragePrice is
+  /// chain-agnostic, operating on {price_usd, sampled_at} rows regardless of source), reading
+  /// supply/decimals from the SPL mint account directly instead of an ERC20 totalSupply() call
+  /// -- Solana has no "view function" distinct from reading account data. Price samples come
+  /// from the same sho_price_samples table keeper/src/solanaPriceSampler.js writes into
+  /// (keyed by the tracked mint, same as the EVM path), so this needed no new table, only this
+  /// new read path.
+  async function solanaTokenTwapMcap(tokenMint) {
+    const samples = await db.priceSamplesSince(tokenMint, new Date(Date.now() - TWAP_WINDOW_MS - 60_000));
+    const price = timeWeightedAveragePrice(samples);
+    if (price === null) return null;
+    const mintInfo = await solanaConnection.getAccountInfo(new PublicKey(tokenMint));
+    if (!mintInfo) return null;
+    const mint = solanaAbis.decodeMint(mintInfo.data);
+    return price * Number(ethers.formatUnits(mint.supply, mint.decimals));
+  }
+
+  /// Solana counterpart of db.shoLeaderboard -- that query only ever reads sho_trades, which
+  /// nothing writes Solana rows into (Solana trade data lives in Birdeye's API, not a local
+  /// table), so a Solana campaign's leaderboard silently rendered empty without this. Returns
+  /// [] (not an error) when BIRDEYE_API_KEY isn't configured on this API instance, same "stays
+  /// off without it" posture every other optional-env-var-gated piece of this project uses.
+  async function solanaLeaderboard(row, limit) {
+    if (!process.env.BIRDEYE_API_KEY) return [];
+    try {
+      return await netBuyVolumeForSolanaToken(row.token, Number(row.window_seconds), limit);
+    } catch (e) {
+      console.error(`[shoRoutes] Solana leaderboard fetch failed for ${row.campaign_address}:`, e.message);
+      return [];
+    }
   }
 
   /// milestones[] with a `status` per tier. Reached + past its challenge window is split into
@@ -118,12 +151,11 @@ function router(provider, solanaConnection) {
     return m.totalClaimed > 0n ? "claimed" : "claimable";
   }
 
-  /// A Solana campaign has no price-sampling source yet (no chosen Solana DEX indexer — see
-  /// keeper/src/solanaCampaignIndexer.js's header), so `mcap` is always null here, same
-  /// "not ready yet" semantics tokenTwapMcap already uses for a too-young EVM campaign. Token
-  /// name/symbol come from Metaplex metadata when the tracked mint has any (solanaAbis.js's
-  /// fetchSplTokenInfo) -- still null for a mint with none, same honest-gap posture as the
-  /// website/twitter/holders fields already null everywhere in this API.
+  /// `mcap` now comes from solanaTokenTwapMcap (same "not ready yet" semantics tokenTwapMcap
+  /// already uses for a too-young campaign -- null, not a crash, when there's no valid 30-min
+  /// TWAP yet). Token name/symbol come from Metaplex metadata when the tracked mint has any
+  /// (solanaAbis.js's fetchSplTokenInfo) -- still null for a mint with none, same honest-gap
+  /// posture as the website/twitter/holders fields already null everywhere in this API.
   async function loadSolanaCampaignSummary(row) {
     if (!solanaConnection) throw new Error("SOLANA_RPC_URL is not configured on this API instance");
     const campaignPubkey = new PublicKey(row.campaign_address);
@@ -131,6 +163,7 @@ function router(provider, solanaConnection) {
     if (!info) throw new Error(`Solana campaign account ${row.campaign_address} not found on-chain`);
     const c = solanaAbis.decodeShoCampaign(info.data);
     const now = Math.floor(Date.now() / 1000);
+    const mcap = await solanaTokenTwapMcap(c.token);
 
     let seenUnreached = false;
     const milestones = c.milestones.map((m, i) => {
@@ -170,7 +203,7 @@ function router(provider, solanaConnection) {
       durationSeconds: Number(c.duration),
       createdAt,
       daysLeft: daysLeft(createdAt, c.duration),
-      mcap: null,
+      mcap,
       milestones,
     };
   }
@@ -204,7 +237,9 @@ function router(provider, solanaConnection) {
       const row = await db.getCampaign(req.params.address);
       if (!row || row.factory !== "sho") return res.status(404).json({ error: "campaign not found" });
       const summary = row.network === "solana" ? await loadSolanaCampaignSummary(row) : await loadCampaignSummary(row);
-      const leaderboard = await db.shoLeaderboard(row.campaign_address, new Date(Date.now() - Number(row.window_seconds) * 1000), 10);
+      const leaderboard = row.network === "solana"
+        ? await solanaLeaderboard(row, 10)
+        : await db.shoLeaderboard(row.campaign_address, new Date(Date.now() - Number(row.window_seconds) * 1000), 10);
       res.json({ ...summary, topLeaderboard: leaderboard });
     } catch (e) {
       console.error(`[GET /sho/campaigns/${req.params.address}]`, e);
@@ -217,7 +252,9 @@ function router(provider, solanaConnection) {
       const row = await db.getCampaign(req.params.address);
       if (!row || row.factory !== "sho") return res.status(404).json({ error: "campaign not found" });
       const limit = Math.min(500, Number(req.query.limit) || 100);
-      const leaderboard = await db.shoLeaderboard(row.campaign_address, new Date(Date.now() - Number(row.window_seconds) * 1000), limit);
+      const leaderboard = row.network === "solana"
+        ? await solanaLeaderboard(row, limit)
+        : await db.shoLeaderboard(row.campaign_address, new Date(Date.now() - Number(row.window_seconds) * 1000), limit);
       res.json({ leaderboard: leaderboard.map((e, i) => ({ rank: i + 1, ...e })) });
     } catch (e) {
       console.error(`[GET /sho/campaigns/${req.params.address}/leaderboard]`, e);

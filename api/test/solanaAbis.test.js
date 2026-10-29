@@ -3,7 +3,7 @@ const { PublicKey, Keypair } = require("@solana/web3.js");
 const { test, assertEqual, summary } = require("./helpers/harness");
 const {
   decodeConfig, decodeShoCampaign, decodeSsoCampaign, NATIVE_SOL_SENTINEL,
-  decodeMintDecimals, decodeTokenMetadataNameSymbol, metadataPda, fetchSplTokenInfo,
+  decodeMintDecimals, decodeMint, decodeTokenMetadataNameSymbol, metadataPda, fetchSplTokenInfo,
 } = require("../src/solanaAbis");
 
 // Same hand-encoding approach as keeper/test/solanaAbis.test.js -- the only check available
@@ -85,8 +85,9 @@ test("native-SOL sentinel decodes to the expected all-'1' base58 string", () => 
 
 // SPL Token's Mint::LEN is 82 bytes: COption<Pubkey> mint_authority (4+32) + supply u64 (8) +
 // decimals u8 (1) + is_initialized bool (1) + COption<Pubkey> freeze_authority (4+32).
-function encodeMint({ decimals }) {
+function encodeMint({ decimals, supply = 0n }) {
   const buf = Buffer.alloc(82);
+  buf.writeBigUInt64LE(BigInt(supply), 36);
   buf.writeUInt8(decimals, 44);
   return buf;
 }
@@ -94,6 +95,12 @@ function encodeMint({ decimals }) {
 test("decodeMintDecimals reads the decimals field at its fixed offset", () => {
   assertEqual(decodeMintDecimals(encodeMint({ decimals: 6 })), 6);
   assertEqual(decodeMintDecimals(encodeMint({ decimals: 9 })), 9);
+});
+
+test("decodeMint reads both supply (offset 36) and decimals (offset 44)", () => {
+  const m = decodeMint(encodeMint({ decimals: 6, supply: 1_000_000_000_000n }));
+  assertEqual(m.supply, 1_000_000_000_000n);
+  assertEqual(m.decimals, 6);
 });
 
 function encodeMetadata({ updateAuthority, mint, name, symbol }) {

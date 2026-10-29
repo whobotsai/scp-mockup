@@ -102,13 +102,16 @@ verified (built, tested, or deployed), not just written.
       `@solana/web3.js@1.95.3` (byte lengths, account counts, and the Anchor discriminator
       cross-checked against the keeper's own Node-crypto implementation all matched). Never
       run against a live wallet or deployed program.
-- [ ] *(found along the way, not yet done)* The API's own Solana SHO summary
-      (`api/src/shoRoutes.js::loadSolanaCampaignSummary`) still hardcodes `mcap: null` and has
-      no leaderboard field at all — not because the data doesn't exist (the keeper now
-      computes both internally via `solanaPriceSampler.js`/`solanaTraderIndexer.js`), but
-      because this read layer was never updated to surface them for display. Doesn't block
-      claiming (which reads `snapshots.entries` directly, independent of this), but means a
-      Solana SHO campaign's Discover/detail pages still show no mcap or leaderboard today.
+- [x] *(found along the way, now fixed)* The API's own Solana SHO summary
+      (`api/src/shoRoutes.js`) now surfaces real `mcap` (`solanaTokenTwapMcap()`, same
+      chain-agnostic TWAP math as EVM, reading the same `sho_price_samples` table
+      `solanaPriceSampler.js` already writes into) and a real leaderboard
+      (`solanaLeaderboard()`, via new `api/src/solanaTraderIndexer.js` — a direct port of the
+      keeper's module, Birdeye-based) in both `GET /sho/campaigns/:address` and
+      `.../leaderboard`, instead of a hardcoded `null`/`db.shoLeaderboard` falling through to
+      an always-empty EVM-only table. Added `api/src/solanaAbis.js::decodeMint` (supply, not
+      just decimals) to support it. Needs `BIRDEYE_API_KEY`/`SOLANA_RPC_URL` configured on
+      the API instance — stays `null`/empty without them, same optional posture as elsewhere.
 
 ## Phase 3 — Security hardening (both networks) — Stage 3, currently NOT STARTED
 

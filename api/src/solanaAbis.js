@@ -130,6 +130,15 @@ function decodeMintDecimals(data) {
   return data.readUInt8(44);
 }
 
+/// Same Mint layout as decodeMintDecimals, also reading supply (u64 LE at offset 36) --
+/// needed for mcap (price * circulating supply), which decodeMintDecimals alone can't give.
+/// Direct port of keeper/src/abis/solana.js::decodeMint.
+function decodeMint(data) {
+  const supply = data.readBigUInt64LE(36);
+  const decimals = data.readUInt8(44);
+  return { supply, decimals };
+}
+
 function metadataPda(mint) {
   const programId = new PublicKey(TOKEN_METADATA_PROGRAM_ID);
   const [addr] = PublicKey.findProgramAddressSync(
@@ -181,6 +190,7 @@ module.exports = {
   decodeShoCampaign,
   decodeSsoCampaign,
   decodeMintDecimals,
+  decodeMint,
   decodeTokenMetadataNameSymbol,
   metadataPda,
   fetchSplTokenInfo,
