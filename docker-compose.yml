@@ -1,0 +1,80 @@
+# Self-hosts the full backend trio (api/keeper/registration-service) plus their two Postgres
+# instances as one `docker compose up`, instead of three separate terminal panes (see each
+# service's own README "Build order" and docs/SOLANA_MAINNET_LAUNCH_PLAN.md's P0 hosting
+# item). Mirrors the 5432-vs-5433 host-port split keeper/docker-compose.yml and
+# registration-service/docker-compose.yml's own dev-only Postgres containers already use --
+# this file supersedes those two for an all-in-one run; use either of those individually if
+# you only want that one service's Postgres on its own.
+#
+# NOT fully verified -- this file's own structure (service wiring, required env_files, port
+# mappings) was validated with `docker compose config`, and a Docker daemon does run in the
+# sandbox that wrote this, but an actual `docker compose up --build` got stuck resolving
+# node:20-alpine from Docker Hub (429 rate limit on a shared sandbox IP -- see each
+# service's Dockerfile), so the full stack has never actually come up end-to-end. Before
+# running this for real:
+#   1. Copy each service's .env.example to .env and fill in real values (see each file's
+#      own comments for what's required vs optional).
+#   2. In keeper/.env and api/.env, point DATABASE_URL at this compose network's own
+#      hostname, not localhost:
+#        DATABASE_URL=postgres://keeper:keeper@keeper-db:5432/keeper
+#      In registration-service/.env:
+#        DATABASE_URL=postgres://registration:registration@registration-db:5432/registration
+#      (keeper-db/registration-db are this file's own service names below, reachable by name
+#      on compose's default network -- the 5432/5433 host-port mappings are only for
+#      reaching Postgres from your own machine outside this compose network.)
+#   3. docker compose up --build
+services:
+  keeper-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: keeper
+      POSTGRES_PASSWORD: keeper
+      POSTGRES_DB: keeper
+    ports:
+      - "5432:5432"
+    volumes:
+      - keeper-postgres-data:/var/lib/postgresql/data
+
+  registration-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: registration
+      POSTGRES_PASSWORD: registration
+      POSTGRES_DB: registration
+    ports:
+      - "5433:5432"
+    volumes:
+      - registration-postgres-data:/var/lib/postgresql/data
+
+  keeper:
+    build: ./keeper
+    env_file: ./keeper/.env
+    depends_on:
+      - keeper-db
+    # keeper/scripts/migrate.js applies migrations/*.sql with IF NOT EXISTS throughout, so
+    # re-running it on every container start is safe.
+    command: sh -c "npm run migrate && npm start"
+    restart: unless-stopped
+
+  api:
+    build: ./api
+    env_file: ./api/.env
+    ports:
+      - "3001:3001"
+    depends_on:
+      - keeper-db
+    restart: unless-stopped
+
+  registration-service:
+    build: ./registration-service
+    env_file: ./registration-service/.env
+    ports:
+      - "3002:3002"
+    depends_on:
+      - registration-db
+    command: sh -c "npm run migrate && npm start"
+    restart: unless-stopped
+
+volumes:
+  keeper-postgres-data:
+  registration-postgres-data:

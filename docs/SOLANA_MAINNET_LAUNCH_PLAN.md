@@ -68,7 +68,19 @@ hidden — read the "Decide now" calls under P1 before committing to a date.
       infrastructure polish — right now all three only run on localhost, which means nothing
       below (including the live smoke test) can involve a second real person or device. This
       is a bigger lift than it sounds and should start in parallel with the toolchain work,
-      not after it.
+      not after it. Tooling to make self-hosting (a VPS, or any PaaS that runs a Dockerfile)
+      easier now exists — root `docker-compose.yml` plus a `Dockerfile` in each of
+      `api/`/`keeper/`/`registration-service/` — but **not verified end-to-end**: the compose
+      file's own structure passed `docker compose config`, but an actual
+      `docker compose up --build` from the sandbox that wrote this got stuck on Docker Hub's
+      anonymous-pull rate limit (429 on a shared sandbox IP) resolving `node:20-alpine`, so no
+      container from this stack has actually started yet. `contracts-solana/Dockerfile` (a
+      separate toolchain image for the item above — real `solana`+`anchor` CLIs via a
+      container instead of a local install) is entirely untested for a harder reason:
+      `release.solana.com` and `github.com` (needed for `avm`) both return policy-blocked 403s
+      from this sandbox, not just rate-limited. Build/run all of these yourself on a machine
+      with normal, unrestricted internet access; don't trust any of them until they've
+      actually come up once.
 - [ ] Point every `.env`/`SCP_CONFIG` at the real devnet program ids + a devnet RPC URL +
       the now-hosted backend URLs. Run the **entire flow live, once, end to end**, with
       devnet SOL/SPL tokens: create a SHO campaign → price samples land → leaderboard
