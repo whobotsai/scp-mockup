@@ -3554,7 +3554,7 @@ function Profile({go, user, notify}){
 
 /* ===================== APP SHELL ===================== */
 
-function TopNav({route, go, theme, setTheme, user}){
+function TopNav({route, go, theme, setTheme, user, solanaUser}){
   const is = (p)=> route===p || route.startsWith(p+'/');
   return (
     <div className="topnav">
@@ -3581,6 +3581,16 @@ function TopNav({route, go, theme, setTheme, user}){
             ? <button className={`nav-chip mono ${is('/profile')?'active':''}`} onClick={()=>go('/profile')}><IcoWallet size={12}/>{shortAddr(user.wallet)}</button>
             : <Btn size="sm" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>}
           {user.wallet && !user.chainOk && <Btn kind="outline" size="sm" onClick={user.connectWallet}>Switch to {SCP_CONFIG.CHAIN_NAME}</Btn>}
+          {/* Diamond Hand is dual-chain, so the nav shows both wallet slots independently --
+              connecting one is never a substitute for the other, unlike CreateWizard/claim
+              buttons where only one network applies at a time (see this project's own
+              "isSolana" branches elsewhere). */}
+          {solanaUser.publicKey
+            // Not a <button onClick={()=>go('/profile')}> like the EVM chip above --
+            // Profile doesn't take a solanaUser prop and has no Solana-wallet view yet, so
+            // linking there would be a dead end. Just shows the connected state here.
+            ? <span className="nav-chip mono"><IcoWallet size={12}/>{shortAddr(solanaUser.publicKey.toBase58())}</span>
+            : <Btn kind="outline" size="sm" icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>{solanaUser.connecting ? 'Connecting…' : 'Connect Solana'}</Btn>}
         </div>
       </div>
     </div>
@@ -3619,7 +3629,7 @@ function App(){
 
   return (
     <>
-      <TopNav route={route} go={go} theme={theme==='auto'?'dark':theme} setTheme={setTheme} user={user}/>
+      <TopNav route={route} go={go} theme={theme==='auto'?'dark':theme} setTheme={setTheme} user={user} solanaUser={solanaUser}/>
       {view}
       {toast && <Toast msg={toast} onDone={()=>setToast(null)}/>}
     </>
