@@ -7,7 +7,11 @@
     "initialize": "ts-node scripts/initialize.ts",
     "test:01-create-campaign": "ts-node scripts/test/01-create-campaign.ts",
     "test:02-post-root": "ts-node scripts/test/02-post-root.ts",
-    "test:03-claim": "ts-node scripts/test/03-claim.ts"
+    "test:03-claim": "ts-node scripts/test/03-claim.ts",
+    "test:sso-01-create-campaign": "ts-node scripts/test/sso-01-create-campaign.ts",
+    "test:sso-02-post-root": "ts-node scripts/test/sso-02-post-root.ts",
+    "test:sso-03-claim": "ts-node scripts/test/sso-03-claim.ts",
+    "test:registry-register": "ts-node scripts/test/registry-01-register.ts"
   },
   "devDependencies": {
     "@coral-xyz/anchor": "0.30.1",
