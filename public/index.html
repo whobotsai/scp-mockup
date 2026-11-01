@@ -950,6 +950,61 @@ async function submitShoClaimSolana({provider, campaignAddress, milestoneIndex, 
   return {signature};
 }
 
+// Claims an SSO epoch reward on Solana via claim_sol/claim_spl -- identical shape to
+// submitShoClaimSolana above (same API response, same instruction args order), with exactly
+// one difference: the claim_receipt PDA's seed is epoch_index as a u16 (2 raw bytes, LE), not
+// SHO's u8 milestone_index (1 byte) -- see contracts-solana/programs/sso_solana/src/lib.rs's
+// ClaimSol/ClaimSpl structs' seeds vs sho_solana's own. Account order/writability is
+// otherwise exactly the same as SHO's claim_sol/claim_spl (both campaign types share the same
+// Config account layout, and SSO's Campaign/ClaimReceipt accounts are laid out the same way).
+async function submitSsoClaimSolana({provider, campaignAddress, epochIndex, amountRaw, proof, rewardMint}){
+  const programId = SCP_CONFIG.SSO_SOLANA_PROGRAM_ID;
+  const claimant = provider.publicKey;
+  const campaignPda = new window.solanaWeb3.PublicKey(campaignAddress);
+  const {configPda} = await fetchSolanaConfig(programId);
+  const claimReceiptPda = solanaPda(programId, [
+    new TextEncoder().encode('claim'), campaignPda.toBytes(), borsh.u16(epochIndex), claimant.toBytes(),
+  ]);
+
+  const args = [borsh.u16(epochIndex), borsh.u64(amountRaw), borsh.vecProof(proof)];
+
+  let ix;
+  if(!rewardMint){
+    ix = await buildAnchorIx({
+      programId, name:'claim_sol', args,
+      keys: [
+        acct(claimant, true, true),
+        acct(configPda, false, false),
+        acct(campaignPda, false, true),
+        acct(claimReceiptPda, false, true),
+        acct(window.solanaWeb3.SystemProgram.programId, false, false),
+      ],
+    });
+  } else {
+    const rewardMintPk = new window.solanaWeb3.PublicKey(rewardMint);
+    const vaultAta = associatedTokenAddress(campaignPda, rewardMintPk);
+    const claimantAta = associatedTokenAddress(claimant, rewardMintPk);
+    ix = await buildAnchorIx({
+      programId, name:'claim_spl', args,
+      keys: [
+        acct(claimant, true, true),
+        acct(configPda, false, false),
+        acct(campaignPda, false, true),
+        acct(rewardMintPk, false, false),
+        acct(vaultAta, false, true),
+        acct(claimantAta, false, true),
+        acct(claimReceiptPda, false, true),
+        acct(SPL_TOKEN_PROGRAM_ID, false, false),
+        acct(SPL_ASSOCIATED_TOKEN_PROGRAM_ID, false, false),
+        acct(window.solanaWeb3.SystemProgram.programId, false, false),
+      ],
+    });
+  }
+
+  const signature = await signAndSendSolanaTx(provider, [ix]);
+  return {signature};
+}
+
 /* ===================== REGISTRY (registry_solana) ===================== */
 // Solana counterpart of the EVM Registry.registerHandle() call LinkXCallback makes below.
 // registry_solana's register_handle needs the attestor to co-sign the same transaction
@@ -2397,7 +2452,7 @@ function SHODetail({id, go, user, solanaUser, notify}){
 
 /* ===================== SSO DETAIL ===================== */
 
-function SSODetail({id, go, user, notify}){
+function SSODetail({id, go, user, solanaUser, notify}){
   const [refreshTick, setRefreshTick] = useState(0);
   const {loading, data, error} = useApiFetch(`/sso/campaigns/${id}`, [id, refreshTick]);
   const c = useMemo(()=> data ? normalizeSsoCampaign(data) : null, [data]);
@@ -2420,7 +2475,30 @@ function SSODetail({id, go, user, notify}){
   const myClaims = claims.data ? claims.data.claims.filter(cl=>cl.factory==='sso' && cl.campaignAddress.toLowerCase()===c.id.toLowerCase()) : [];
 
   const doClaim = async (e)=>{
-    if(c.network==='solana'){ notify('Claiming a Solana campaign reward isn\'t available yet -- see docs/MAINNET_CHECKLIST.md.'); return; }
+    if(c.network==='solana'){
+      // See SHODetail's identical guard -- no Solana-wallet standings/claims endpoint yet,
+      // so there's no local pre-check here; the claim-proof API call below is itself the
+      // real check (404s if this wallet isn't on the epoch's snapshot).
+      if(!solanaUser.publicKey){ notify('Connect a Solana wallet first to claim.'); return; }
+      setClaiming(e.index);
+      try {
+        const res = await fetch(`${SCP_CONFIG.API_BASE_URL}/campaigns/${c.id}/claim-proof?wallet=${solanaUser.publicKey.toBase58()}&index=${e.index}`);
+        const body = await res.json();
+        if(!res.ok) throw new Error(body.error || 'failed to fetch claim proof');
+        const rewardMint = (c.rewardTokenAddress && c.rewardTokenAddress !== NATIVE_SOL_SENTINEL) ? c.rewardTokenAddress : null;
+        await submitSsoClaimSolana({
+          provider: solanaUser.provider, campaignAddress: c.id, epochIndex: e.index,
+          amountRaw: body.amount, proof: body.proof, rewardMint,
+        });
+        notify(`Claimed epoch ${e.n}.`);
+        setRefreshTick(t=>t+1);
+      } catch(err){
+        notify('Claim failed: '+shortError(err));
+      } finally {
+        setClaiming(null);
+      }
+      return;
+    }
     if(!user.wallet){ notify('Connect a wallet first to claim.'); return; }
     const mine = myClaims.find(cl=>cl.index===e.index);
     if(!mine){ notify("You're not on this epoch's leaderboard snapshot -- nothing to claim."); return; }
@@ -2495,8 +2573,14 @@ function SSODetail({id, go, user, notify}){
                       </div>
                     </div>
                     {e.status==='claimable' && walletStatus!=='claimed' && (
+                      // See SHODetail's identical branch -- no Solana-wallet standings/claims
+                      // aggregation endpoint exists (myClaims above), so eligibility can't be
+                      // shown ahead of time the way the EVM "Not eligible" tag does; the claim
+                      // attempt itself is the real check (the claim-proof API 404s otherwise).
                       c.network==='solana'
-                        ? <Tag kind="neutral">Claiming not available yet</Tag>
+                        ? (solanaUser.publicKey
+                            ? <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===e.index} onClick={()=>doClaim(e)}>{claiming===e.index?'Claiming…':'Claim'}</Btn>
+                            : <Btn size="sm" icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>Connect wallet</Btn>)
                         : (mine
                             ? <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===e.index} onClick={()=>doClaim(e)}>{claiming===e.index?'Claiming…':'Claim'}</Btn>
                             : (user.wallet ? <Tag kind="neutral">Not eligible</Tag> : <Btn size="sm" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>))
@@ -3525,7 +3609,7 @@ function App(){
   else if(parts[0]==='sho' && parts[1]==='create') view = <CreateWizard kind="sho" go={go} user={user} solanaUser={solanaUser} notify={notify}/>;
   else if(parts[0]==='sso' && parts[1]==='create') view = <CreateWizard kind="sso" go={go} user={user} solanaUser={solanaUser} notify={notify}/>;
   else if(parts[0]==='sho' && parts[1]) view = <SHODetail id={parts[1]} go={go} user={user} solanaUser={solanaUser} notify={notify}/>;
-  else if(parts[0]==='sso' && parts[1]) view = <SSODetail id={parts[1]} go={go} user={user} notify={notify}/>;
+  else if(parts[0]==='sso' && parts[1]) view = <SSODetail id={parts[1]} go={go} user={user} solanaUser={solanaUser} notify={notify}/>;
   else if(parts[0]==='sho') view = <Discover kind="sho" go={go}/>;
   else if(parts[0]==='sso') view = <Discover kind="sso" go={go}/>;
   else if(parts[0]==='register') view = <Register go={go} user={user} solanaUser={solanaUser} notify={notify}/>;

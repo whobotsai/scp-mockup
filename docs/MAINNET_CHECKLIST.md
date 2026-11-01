@@ -118,8 +118,6 @@ verified (built, tested, or deployed), not just written.
         hash (case-insensitivity, exact byte match against a hand-computed reference).
         **Never run** through a real X OAuth round-trip, a real wallet extension, or against a
         deployed `registry_solana` program.
-      - **Still missing**: an SSO claim UI (`claim_sol`/`claim_spl` aren't called anywhere for
-        SSO yet, on either network — same gap EVM SSO already has).
 - [x] Build the `claim_sol`/`claim_spl` claim UI (SHO) — `api/src/claimRoutes.js`'s
       `/campaigns/:address/claim-proof` now dispatches by the campaign row's `network`,
       rebuilding the proof with `api/src/solanaMerkleTree.js` (new, same direct-port
@@ -138,6 +136,22 @@ verified (built, tested, or deployed), not just written.
       `@solana/web3.js@1.95.3` (byte lengths, account counts, and the Anchor discriminator
       cross-checked against the keeper's own Node-crypto implementation all matched). Never
       run against a live wallet or deployed program.
+- [x] Build the `claim_sol`/`claim_spl` claim UI (SSO, Solana) — `claim-proof` already
+      dispatched generically on `(network, index)` with no sho/sso branching (shared by both
+      factory types since both chains' `claim(index, amount, proof)` signature is identical
+      across campaign types), so no API change was needed. Added
+      `submitSsoClaimSolana()` in `public/index.html`, identical to `submitShoClaimSolana()`
+      except the `claim_receipt` PDA seed is `epoch_index` as a `u16` (2 raw bytes, LE) instead
+      of SHO's `u8` `milestone_index` (1 byte) — see `sso_solana/src/lib.rs`'s `ClaimSol`/
+      `ClaimSpl` seeds vs `sho_solana`'s own. `SSODetail`'s claim button now branches on
+      `c.network==='solana'` the same way `SHODetail`'s already did (Solana wallet connected →
+      claim button calling the claim-proof API directly, same "no local eligibility
+      pre-check, the API call itself is the check" posture as SHO) instead of always showing
+      "claiming not available yet" regardless of network. (EVM SSO claiming was already wired
+      via `campaign.claim(...)` — this item was only ever a Solana gap, not a cross-network
+      one as an earlier note here claimed.) Verified: full Babel syntax check of the frontend
+      script (`@babel/core` + `@babel/preset-react`, isolated from the live CDN build this
+      page actually uses). Never run against a live wallet or deployed program.
 - [x] *(found along the way, now fixed)* The API's own Solana SHO summary
       (`api/src/shoRoutes.js`) now surfaces real `mcap` (`solanaTokenTwapMcap()`, same
       chain-agnostic TWAP math as EVM, reading the same `sho_price_samples` table
