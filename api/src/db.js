@@ -126,6 +126,60 @@ async function createdCampaigns(creator) {
   return rows;
 }
 
+// ===================== Solana wallet-scoped reads =====================
+// Separate from the EVM functions above (not just the same query with lower() dropped)
+// because base58 is case-sensitive, unlike an EVM hex address -- lower() is actually correct
+// there (two differently-cased spellings really are the same address), but would be a real
+// bug here (two different real base58 addresses could collide). Every comparison below is an
+// exact string match for that reason.
+
+/// Solana counterpart of tokenTradeCampaigns -- doesn't exist as a single query the way EVM's
+/// does, because there's no local sho_trades-equivalent table for Solana (SHO's leaderboard
+/// is computed live from Birdeye, not indexed locally -- see solanaTraderIndexer.js's own
+/// header). walletRoutes.js's Solana standings branch iterates solanaShoCampaigns() below and
+/// checks each one's live leaderboard for the wallet instead.
+async function solanaShoCampaigns() {
+  const { rows } = await pool.query("SELECT * FROM campaigns WHERE network = 'solana' AND factory = 'sho' ORDER BY created_at DESC");
+  return rows;
+}
+
+/// Solana counterpart of socialPostCampaigns -- sso_posts is a shared table (Solana SSO rows
+/// go through the identical db.insertSsoPost the EVM path uses -- see
+/// keeper/src/solanaSocialIndexer.js's own header), so this only differs from the EVM
+/// function above in using an exact match.
+async function solanaSocialPostCampaigns(wallet) {
+  const { rows } = await pool.query("SELECT DISTINCT campaign_address FROM sso_posts WHERE wallet = $1", [wallet]);
+  return rows.map((r) => r.campaign_address);
+}
+
+/// Solana counterpart of snapshotsForWallet -- same shared `snapshots` table (entries[].account
+/// is a base58 string for a Solana campaign's snapshot, written by
+/// solanaMilestoneEngine.js/solanaEpochEngine.js), restricted to network = 'solana' rows and
+/// an exact (not lower-cased) match.
+async function solanaSnapshotsForWallet(wallet) {
+  const { rows } = await pool.query(
+    `SELECT s.*, c.factory FROM snapshots s
+     JOIN campaigns c ON c.campaign_address = s.campaign_address
+     WHERE c.network = 'solana' AND EXISTS (
+       SELECT 1 FROM jsonb_array_elements(s.entries) e
+       WHERE e->>'account' = $1
+     )
+     ORDER BY s.computed_at DESC`,
+    [wallet]
+  );
+  return rows;
+}
+
+/// Solana counterpart of createdCampaigns -- same `campaigns` table, restricted to
+/// network = 'solana' and an exact match.
+async function solanaCreatedCampaigns(creator) {
+  const { rows } = await pool.query(
+    "SELECT * FROM campaigns WHERE network = 'solana' AND creator = $1 ORDER BY created_at DESC",
+    [creator]
+  );
+  return rows;
+}
+
 module.exports = {
   pool,
   listCampaignsByFactory,
@@ -139,4 +193,8 @@ module.exports = {
   tokenTradeCampaigns,
   socialPostCampaigns,
   createdCampaigns,
+  solanaShoCampaigns,
+  solanaSocialPostCampaigns,
+  solanaSnapshotsForWallet,
+  solanaCreatedCampaigns,
 };

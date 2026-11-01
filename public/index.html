@@ -1927,7 +1927,7 @@ function buildShareCardData(kind, role, c, standing){
   const rank = standing ? `#${standing.rank}` : '—';
   const chips = isSho
     ? [
-        {label: 'My Net-Buy Vol', value: standing ? fmtUSD(fmtTokenAmount(standing.score)) : '—', accent: true},
+        {label: 'My Net-Buy Vol', value: standing ? fmtUSD(standing.score) : '—', accent: true},
         {label: 'Reward Pool', value: lockedAmount},
         {label: 'Of', value: `Top ${c.size}`},
       ]
@@ -2131,7 +2131,10 @@ function SHODetail({id, go, solanaUser, notify}){
                         <tr key={i} className={isMe ? 'me':''}>
                           <td className="rank">{r.rank}</td>
                           <td className="addr mono">{isMe ? myWallet : shortAddr(r.wallet)}</td>
-                          <td className="mono">${fmtNum(fmtTokenAmount(r.score))}</td>
+                          {/* leaderboard score is already a plain USD number (net-buy volume),
+                              not a raw on-chain integer -- fmtTokenAmount would BigInt() a
+                              non-integer float and throw (caught, silently returns 0). */}
+                          <td className="mono">${fmtNum(r.score)}</td>
                           <td className="bar-cell"><div className="mini-bar"><div style={{width:(100-i*8)+'%'}}></div></div></td>
                         </tr>
                       );
@@ -2818,16 +2821,15 @@ function LinkXCallback({go, solanaUser, notify}){
 
 /* ===================== PROFILE ===================== */
 
-// No /wallets/:address/{standings,claims,created} equivalent exists for a Solana wallet yet
-// (that whole route file is EVM-only -- ethers.isAddress + ethers.Contract reads against an
-// EVM campaign contract's claimed()/getMilestone()/getEpoch(), none of which have a Solana
-// counterpart written yet). Building one is real, separate work (decoding Anchor accounts,
-// a Solana-side db.createdCampaigns/snapshotsForWallet equivalent), not something this pass
-// -- which only removes EVM, not add new Solana features -- should invent. So this page is
-// honest about the gap rather than silently calling an endpoint that would always 400/empty.
+// /wallets/:address/{standings,claims,created} now dispatch to a Solana branch server-side
+// (see api/src/walletRoutes.js) when :address is a base58 Solana address -- same shape as the
+// EVM responses this page's queries/rendering already expect, so this works off `myWallet`
+// (a base58 string) exactly the way the old EVM version worked off user.wallet, no network
+// branching needed here.
 function Profile({go, solanaUser, notify}){
   const hasWallet = !!solanaUser.publicKey;
   const myWallet = hasWallet ? solanaUser.publicKey.toBase58() : null;
+  const [refreshTick, setRefreshTick] = useState(0);
 
   const [solanaLink, setSolanaLink] = useState(null);
   useEffect(()=>{
@@ -2842,6 +2844,65 @@ function Profile({go, solanaUser, notify}){
   const hasX = !!solanaLink;
   const connected = hasWallet || hasX;
 
+  // Cross-referenced against the full campaign lists (same pattern the EVM version of this
+  // page always used) since the wallet-scoped endpoints below intentionally return only
+  // addresses + numbers, not display fields -- see walletRoutes.js's own header.
+  const shoCampaigns = useApiFetch(hasWallet ? '/sho/campaigns' : null, [hasWallet]);
+  const ssoCampaigns = useApiFetch(hasWallet ? '/sso/campaigns' : null, [hasWallet]);
+  const standings = useApiFetch(hasWallet ? `/wallets/${myWallet}/standings` : null, [hasWallet, myWallet, refreshTick]);
+  const claims = useApiFetch(hasWallet ? `/wallets/${myWallet}/claims` : null, [hasWallet, myWallet, refreshTick]);
+  const created = useApiFetch(hasWallet ? `/wallets/${myWallet}/created` : null, [hasWallet, myWallet, refreshTick]);
+  const [claiming, setClaiming] = useState(null);
+
+  const findSho = (addr)=> {
+    const raw = shoCampaigns.data && shoCampaigns.data.campaigns.find(c=>c.contract===addr);
+    return raw ? normalizeShoCampaign(raw) : null;
+  };
+  const findSso = (addr)=> {
+    const raw = ssoCampaigns.data && ssoCampaigns.data.campaigns.find(c=>c.contract===addr);
+    return raw ? normalizeSsoCampaign(raw) : null;
+  };
+
+  const shoPositions = (standings.data ? standings.data.sho : []).map(s=>({...s, c:findSho(s.campaignAddress)})).filter(p=>p.c);
+  const ssoPositions = (standings.data ? standings.data.sso : []).map(s=>({...s, c:findSso(s.campaignAddress)})).filter(p=>p.c);
+  const createdSho = (created.data ? created.data.created : []).filter(c=>c.factory==='sho').map(c=>({...c, full:findSho(c.id)}));
+  const createdSso = (created.data ? created.data.created : []).filter(c=>c.factory==='sso').map(c=>({...c, full:findSso(c.id)}));
+  const allClaims = claims.data ? claims.data.claims : [];
+  const history = allClaims.filter(cl=>cl.status==='claimed');
+  const claimableEntries = allClaims.filter(cl=>cl.status==='claimable').map(cl=>{
+    const full = cl.factory==='sho' ? findSho(cl.campaignAddress) : findSso(cl.campaignAddress);
+    return {...cl, full};
+  });
+
+  const doClaimFromProfile = async (cl)=>{
+    setClaiming(cl.campaignAddress+':'+cl.index);
+    try {
+      const res = await fetch(`${SCP_CONFIG.API_BASE_URL}/campaigns/${cl.campaignAddress}/claim-proof?wallet=${myWallet}&index=${cl.index}`);
+      const body = await res.json();
+      if(!res.ok) throw new Error(body.error || 'failed to fetch claim proof');
+      const rewardMint = (cl.full && cl.full.rewardTokenAddress && cl.full.rewardTokenAddress !== NATIVE_SOL_SENTINEL) ? cl.full.rewardTokenAddress : null;
+      if(cl.factory==='sho'){
+        await submitShoClaimSolana({provider: solanaUser.provider, campaignAddress: cl.campaignAddress, milestoneIndex: cl.index, amountRaw: body.amount, proof: body.proof, rewardMint});
+      } else {
+        await submitSsoClaimSolana({provider: solanaUser.provider, campaignAddress: cl.campaignAddress, epochIndex: cl.index, amountRaw: body.amount, proof: body.proof, rewardMint});
+      }
+      notify('Claim confirmed.');
+      setRefreshTick(t=>t+1);
+    } catch(e){
+      notify('Claim failed: '+shortError(e));
+    } finally {
+      setClaiming(null);
+    }
+  };
+
+  const activeCount = shoPositions.length + ssoPositions.length;
+  const createdCount = createdSho.length + createdSso.length;
+
+  const roles = [];
+  if(shoPositions.length) roles.push({label:'Trader', kind:'sho'});
+  if(ssoPositions.length) roles.push({label:'Shiller', kind:'sso'});
+  if(createdCount) roles.push({label:'Creator', kind:'neutral'});
+
   return (
     <div className="page">
       <div className="wrap" style={{maxWidth:980}}>
@@ -2853,6 +2914,7 @@ function Profile({go, solanaUser, notify}){
             <h1 style={{fontSize:26,marginBottom:6}}>{hasWallet ? shortAddr(myWallet) : hasX ? solanaLink.xHandle : 'Your profile'}</h1>
             <div style={{display:'flex',flexWrap:'wrap',gap:8,alignItems:'center'}}>
               {hasWallet && hasX && <span className="camp-meta">{solanaLink.xHandle}</span>}
+              {roles.map(r=> <Tag key={r.label} kind={r.kind}>{r.label}</Tag>)}
             </div>
           </div>
           {!hasWallet && <Btn size="sm" icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>Connect wallet</Btn>}
@@ -2863,17 +2925,156 @@ function Profile({go, solanaUser, notify}){
         {!connected ? (
           <div className="empty-state">
             <h3>Connect to see your dashboard</h3>
-            <p>Connect a wallet to track your SHO trading positions, or register your X account to track shilling.</p>
+            <p>Connect a wallet to track your SHO trading positions, or register your X account to track shilling. Claimable rewards, positions, and history will show up here.</p>
             <div style={{display:'flex',gap:10,justifyContent:'center',marginTop:16,flexWrap:'wrap'}}>
               <Btn icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>Connect wallet</Btn>
               <Btn kind="outline" icon={IcoX} onClick={()=>go('/register')}>Register X</Btn>
             </div>
           </div>
-        ) : (
+        ) : !hasWallet ? (
           <div className="empty-state">
-            <h3>No aggregated dashboard yet</h3>
-            <p>Positions, claimable rewards, created campaigns, and claim history aren&rsquo;t aggregated per-wallet for Solana yet. Visit a campaign directly from <button style={{background:'none',border:'none',color:'var(--accent)',textDecoration:'underline',cursor:'pointer',font:'inherit',padding:0}} onClick={()=>go('/sho')}>SHO</button> or <button style={{background:'none',border:'none',color:'var(--accent)',textDecoration:'underline',cursor:'pointer',font:'inherit',padding:0}} onClick={()=>go('/sso')}>SSO</button> to see your standing and claim.</p>
+            <h3>Connect a wallet too</h3>
+            <p>X is linked, but positions, claimable rewards, and created campaigns are tracked per-wallet -- connect your Solana wallet to see them.</p>
+            <div style={{marginTop:16}}><Btn icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>Connect wallet</Btn></div>
           </div>
+        ) : (
+          <>
+            <div className="profile-stats">
+              <div className="stat-tile"><IcoCoins size={20}/><div><StatNum value={history.length} format={v=>Math.round(v)}/><span className="lbl">Rewards claimed</span></div></div>
+              <div className="stat-tile accent"><IcoCheckCirc size={20}/><div><StatNum value={claimableEntries.length} format={v=>Math.round(v)}/><span className="lbl">Claimable now</span></div></div>
+              <div className="stat-tile"><IcoTarget size={20}/><div><StatNum value={activeCount} format={v=>Math.round(v)}/><span className="lbl">Active positions</span></div></div>
+              <div className="stat-tile"><IcoFlask size={20}/><div><StatNum value={createdCount} format={v=>Math.round(v)}/><span className="lbl">Campaigns created</span></div></div>
+            </div>
+
+            {claimableEntries.length>0 && (
+              <div className="panel" style={{marginTop:22}}>
+                <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoCheckCirc size={13}/>Claimable now</div>
+                <div className="claim-list">
+                  {claimableEntries.map((it,i)=>(
+                    <div key={i} className="claim-row" onClick={()=>go(`/${it.factory}/${it.campaignAddress}`)}>
+                      <div>
+                        <div style={{fontWeight:600,fontSize:13.5,display:'flex',alignItems:'center',gap:8}}>{it.full ? it.full.token : shortAddr(it.campaignAddress)} <Tag kind={it.factory}>{it.factory==='sho'?'SHO':'SSO'}</Tag></div>
+                        <div className="camp-meta">{it.factory==='sho' ? `Milestone ${it.index}` : `Epoch ${it.index+1}`} reward</div>
+                      </div>
+                      <div style={{display:'flex',alignItems:'center',gap:14}}>
+                        <div style={{textAlign:'right'}}>
+                          <div className="mono" style={{fontWeight:600}}>{fmtNum(fmtTokenAmount(it.amount, it.full ? it.full.rewardDecimals : undefined))} {it.full ? it.full.denom : ''}</div>
+                        </div>
+                        <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===it.campaignAddress+':'+it.index} onClick={(e)=>{e.stopPropagation(); doClaimFromProfile(it);}}>{claiming===it.campaignAddress+':'+it.index ? 'Claiming…' : 'Claim'}</Btn>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {shoPositions.length>0 && (
+              <div className="panel" style={{marginTop:22}}>
+                <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoTrendUp size={13}/>My SHO positions</div>
+                <div className="scroll-x">
+                  <table className="lb-table">
+                    <thead><tr><th>Campaign</th><th>Rank</th><th>Net-buy volume</th><th>Status</th></tr></thead>
+                    <tbody>
+                      {shoPositions.map(p=>(
+                        <tr key={p.campaignAddress} style={{cursor:'pointer'}} onClick={()=>go(`/sho/${p.campaignAddress}`)}>
+                          <td>{p.c.token}</td>
+                          <td className="rank">#{p.rank}</td>
+                          <td className="mono">{fmtUSD(p.score)}</td>
+                          <td><Tag kind="neutral" icon={IcoClock}>Tracking</Tag></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {ssoPositions.length>0 && (
+              <div className="panel" style={{marginTop:22}}>
+                <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoMegaphone size={13}/>My SSO positions</div>
+                <div className="scroll-x">
+                  <table className="lb-table">
+                    <thead><tr><th>Campaign</th><th>Rank</th><th>Engagement score</th><th>Status</th></tr></thead>
+                    <tbody>
+                      {ssoPositions.map(p=>(
+                        <tr key={p.campaignAddress+':'+p.epochIndex} style={{cursor:'pointer'}} onClick={()=>go(`/sso/${p.campaignAddress}`)}>
+                          <td>{p.c.token}</td>
+                          <td className="rank">#{p.rank}</td>
+                          <td className="mono">{fmtNum(p.score)}</td>
+                          <td><Tag kind="neutral" icon={IcoClock}>Tracking</Tag></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {(createdSho.length>0 || createdSso.length>0) && (
+              <div className="panel" style={{marginTop:22}}>
+                <div className="eyebrow" style={{marginBottom:14,display:'flex',alignItems:'center',gap:6}}><IcoFlask size={13}/>My created campaigns</div>
+                <div className="created-grid">
+                  {createdSho.map(c=>{
+                    const f = c.full;
+                    const distributedBps = f ? f.milestones.filter(m=>m.status==='claimed'||m.status==='claimable').reduce((s,m)=>s+m.bps,0) : 0;
+                    const locked = fmtTokenAmount(f ? f.locked : c.locked, f ? f.rewardDecimals : undefined);
+                    return (
+                      <div key={c.id} className="created-card" onClick={()=>go(`/sho/${c.id}`)}>
+                        <div className="camp-card-top">
+                          <div><div className="ticker">{f ? f.token : shortAddr(c.token)}</div><div className="camp-meta">SHO{f?` · ${f.window} window`:''}</div></div>
+                          <Tag kind="sho">{f && f.milestones.every(m=>m.status==='claimed'||m.status==='claimable') ? 'Completed' : 'Active'}</Tag>
+                        </div>
+                        <div className="kv"><span className="k">Locked</span><span className="v">{fmtNum(locked)} {f ? f.denom : ''}</span></div>
+                        <div className="kv"><span className="k">Distributed</span><span className="v">{distributedBps/100}%</span></div>
+                        <div className="kv"><span className="k">Remaining</span><span className="v">{fmtNum(locked*(10000-distributedBps)/10000)} {f ? f.denom : ''}</span></div>
+                      </div>
+                    );
+                  })}
+                  {createdSso.map(c=>{
+                    const f = c.full;
+                    const distributedEpochs = f ? f.epochs.filter(e=>e.status==='claimed'||e.status==='claimable').length : 0;
+                    const distributedBps = f ? Math.round(10000*distributedEpochs/f.epochs.length) : 0;
+                    const locked = fmtTokenAmount(f ? f.locked : c.locked, f ? f.rewardDecimals : undefined);
+                    return (
+                      <div key={c.id} className="created-card" onClick={()=>go(`/sso/${c.id}`)}>
+                        <div className="camp-card-top">
+                          <div><div className="ticker">{f ? f.token : shortAddr(c.token)}</div><div className="camp-meta">SSO{f?` · ${f.epochLen} epochs`:''}</div></div>
+                          <Tag kind="sso">{f && f.currentEpochIndex==null ? 'Completed' : 'Active'}</Tag>
+                        </div>
+                        <div className="kv"><span className="k">Locked</span><span className="v">{fmtNum(locked)} {f ? f.denom : ''}</span></div>
+                        <div className="kv"><span className="k">Distributed</span><span className="v">{distributedBps/100}%</span></div>
+                        <div className="kv"><span className="k">Remaining</span><span className="v">{fmtNum(locked*(10000-distributedBps)/10000)} {f ? f.denom : ''}</span></div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {history.length>0 && (
+              <div className="panel" style={{marginTop:22}}>
+                <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoTrophy size={13}/>Claim history</div>
+                <div className="scroll-x">
+                  <table className="lb-table">
+                    <thead><tr><th>Date</th><th>Campaign</th><th>Reward</th><th>Amount</th></tr></thead>
+                    <tbody>
+                      {history.map((h,i)=>{
+                        const f = h.factory==='sho' ? findSho(h.campaignAddress) : findSso(h.campaignAddress);
+                        return (
+                          <tr key={i}>
+                            <td className="mono" style={{fontSize:12}}>{h.claimedAt ? new Date(h.claimedAt).toLocaleDateString() : '—'}</td>
+                            <td><span style={{display:'inline-flex',alignItems:'center',gap:8}}>{f ? f.token : shortAddr(h.campaignAddress)} <Tag kind={h.factory}>{h.factory==='sho'?'SHO':'SSO'}</Tag></span></td>
+                            <td className="camp-meta">{h.factory==='sho' ? `Milestone ${h.index}` : `Epoch ${h.index+1}`}</td>
+                            <td className="mono">{fmtNum(fmtTokenAmount(h.amount, f ? f.rewardDecimals : undefined))} {f ? f.denom : ''} {h.txHash && <a href={solanaExplorerTxUrl(h.txHash)} target="_blank" rel="noopener noreferrer" className="camp-meta">(tx)</a>}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
