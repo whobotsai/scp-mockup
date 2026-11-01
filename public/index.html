@@ -540,51 +540,37 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px;}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
-<!-- Vendored (not CDN-pinned) so this stays in lockstep with the exact ethers version every
-     other package in this repo uses (see e.g. ../api/package.json) -- copied straight from
-     ethers' own dist/ethers.umd.min.js, see vendor/ETHERS_LICENSE.md. Exposes window.ethers. -->
-<script src="vendor/ethers.umd.min.js"></script>
-<!-- Vendored the same way as ethers.umd.min.js above, from @solana/web3.js's own
-     lib/index.iife.min.js (npm pack @solana/web3.js@1.95.3), see
-     vendor/SOLANA_WEB3_LICENSE.md. Exposes window.solanaWeb3. Used for the Solana half of
-     campaign creation -- see contracts-solana/README.md for what's deployed (nothing, yet)
-     and what SCP_CONFIG.SHO_SOLANA_PROGRAM_ID / SSO_SOLANA_PROGRAM_ID need to become once
-     it is. -->
+<!-- Vendored (not CDN-pinned) from @solana/web3.js's own lib/index.iife.min.js (npm pack
+     @solana/web3.js@1.95.3), see vendor/SOLANA_WEB3_LICENSE.md. Exposes window.solanaWeb3.
+     Used for every on-chain call this page makes -- see contracts-solana/README.md for what's
+     deployed (nothing, yet) and what SCP_CONFIG.SHO_SOLANA_PROGRAM_ID / SSO_SOLANA_PROGRAM_ID
+     need to become once it is. -->
 <script src="vendor/solanaWeb3.min.js"></script>
+<!-- Vendored from js-sha3's own build/sha3.min.js (npm pack js-sha3@0.13.0), see
+     vendor/SHA3_LICENSE.md. Exposes a global keccak256() (among others) directly on window.
+     The one Keccak-256 primitive this page still needs client-side (registry_solana's
+     normalized_handle_key), now that ethers.js is gone. -->
+<script src="vendor/sha3.min.js"></script>
 
 <script type="text/babel" data-presets="react">
 const {useState, useEffect, useMemo, useCallback, useRef} = React;
 
 /* ===================== CONFIG ===================== */
-// Everything here is a real, live-network value (Robinhood Chain Testnet, chain ID 46630 --
-// see ../contracts/deployments/46630.json), not a placeholder. Override any of it without
-// touching this file by setting `window.SCP_CONFIG = {...}` in a small inline <script> before
-// this one loads (e.g. a per-deployment config.js Firebase Hosting serves alongside
-// index.html) -- useful for pointing a preview build at a different API host.
+// Solana-only (EVM/Robinhood support removed -- was never deployed past a testnet and is
+// deferred to a later phase; see git history for contracts/ if that phase resumes). Override
+// any of this without touching this file by setting `window.SCP_CONFIG = {...}` in a small
+// inline <script> before this one loads (e.g. a per-deployment config.js Firebase Hosting
+// serves alongside index.html) -- useful for pointing a preview build at a different API host.
 const SCP_CONFIG = Object.assign({
   API_BASE_URL: 'http://localhost:3001',
   REGISTRATION_SERVICE_URL: 'http://localhost:3002',
-  CHAIN_ID: 46630,
-  CHAIN_NAME: 'Robinhood Chain Testnet',
-  RPC_URL: 'https://rpc.testnet.chain.robinhood.com/rpc',
-  EXPLORER_URL: 'https://explorer.testnet.chain.robinhood.com',
-  NATIVE_SYMBOL: 'ETH',
-  SHO_FACTORY_ADDRESS: '0x257F835b1066c064e9e9896c31556034f8Eee8c9',
-  SSO_FACTORY_ADDRESS: '0x3770ae529595D0994297C35F7b75CEAD612749aa',
-  REGISTRY_ADDRESS: '0xc2ed3d2b8CCa32B8cBC6F6a99D538129c1430065',
-  // No stablecoin deployed on this testnet yet (PRD §5's USDC allowlist is an off-chain/
-  // frontend policy, not contract-enforced -- see SHOFactory.sol's own createCampaign
-  // comment). Set this once one exists; the wizard disables the USDC option while it's empty
-  // rather than sending a made-up address on-chain.
-  USDC_ADDRESS: '',
 
-  // ---- Solana (contracts-solana/) -----------------------------------------------------
   // Placeholders. SHO_SOLANA_PROGRAM_ID / SSO_SOLANA_PROGRAM_ID match the declare_id!()
   // values still in contracts-solana/programs/{sho_solana,sso_solana}/src/lib.rs as of this
   // writing -- i.e. the standard Anchor template defaults, NOT real deployed programs (see
   // that package's README: it has never been built to BPF/SBF or deployed anywhere, not even
-  // localnet). Creating a Solana campaign will fail until these are replaced with real
-  // deployed program ids.
+  // localnet). Creating a campaign will fail until these are replaced with real deployed
+  // program ids.
   SOLANA_CLUSTER: 'devnet',
   SOLANA_RPC_URL: 'https://api.devnet.solana.com',
   SOLANA_EXPLORER_URL: 'https://explorer.solana.com',
@@ -593,62 +579,11 @@ const SCP_CONFIG = Object.assign({
   // Matches registry_solana's own placeholder declare_id!() -- same "not a real deployed
   // program" caveat as the two above.
   REGISTRY_SOLANA_PROGRAM_ID: 'E6pYGM6cDh1WqLjkDRMfvwMMGBD6CWQSfA3msuNYMy3Y',
-  // No SPL stablecoin configured yet, same reasoning as USDC_ADDRESS above.
+  // No SPL stablecoin deployed on this cluster yet (PRD §5's USDC allowlist is an off-chain/
+  // frontend policy, not contract-enforced). Set this once one exists; the wizard disables
+  // the USDC option while it's empty rather than sending a made-up address on-chain.
   SOLANA_USDC_MINT: '',
 }, window.SCP_CONFIG || {});
-const CHAIN_ID_HEX = '0x' + SCP_CONFIG.CHAIN_ID.toString(16);
-
-/* ===================== CONTRACT INTERFACES ===================== */
-// Minimal fragments this page actually calls -- mirrors ../api/src/abis.js (read side) plus
-// the write calls (approve/createCampaign/claim/registerHandle) the API never needs to make.
-// Duplicated rather than shared across packages for the same reason api/src/abis.js's own
-// header gives: each package here is independently deployable.
-const ERC20_ABI = [
-  "function name() view returns (string)",
-  "function symbol() view returns (string)",
-  "function decimals() view returns (uint8)",
-  "function balanceOf(address account) view returns (uint256)",
-  "function allowance(address owner, address spender) view returns (uint256)",
-  "function approve(address spender, uint256 amount) returns (bool)",
-];
-// Custom errors (not plain require strings) that OpenZeppelin v5 contracts revert with --
-// ethers can't decode a revert into e.reason without knowing these, so shortError() below
-// decodes them itself from e.data as a fallback. Covers the two ways a createCampaign() can
-// revert on the reward-token transferFrom, and the one way an admin call like setAttestor
-// reverts for the wrong caller -- all confirmed live in this project's own testing.
-const KNOWN_ERRORS_ABI = [
-  "error ERC20InsufficientBalance(address sender, uint256 balance, uint256 needed)",
-  "error ERC20InsufficientAllowance(address spender, uint256 allowance, uint256 needed)",
-  "error OwnableUnauthorizedAccount(address account)",
-];
-const KNOWN_ERRORS_IFACE = new window.ethers.Interface(KNOWN_ERRORS_ABI);
-const CAMPAIGN_ABI = [
-  // claim()'s signature is identical for SHOCampaign and SSOCampaign (see
-  // ../api/src/claimRoutes.js's own header) so one fragment covers both.
-  "function claim(uint256 index, uint256 amount, bytes32[] calldata proof) external",
-  "function claimed(uint256 index, address account) view returns (bool)",
-];
-const SHO_FACTORY_ABI = [
-  "function createCampaign(address token, address rewardToken, uint256 amount, uint8 window, uint16 leaderboardSize, uint256 duration, uint8[] tiers, uint16[] rewardBpsList) payable returns (address campaign)",
-  "event CampaignCreated(uint256 indexed id, address indexed campaign, address indexed creator, address token, address rewardToken, uint256 totalLocked)",
-];
-const SSO_FACTORY_ABI = [
-  "function createCampaign(address token, address rewardToken, uint256 amount, string keyword, uint8 epochLength, uint16 leaderboardSize, uint256 duration, uint16[] epochRewardBpsList) payable returns (address campaign)",
-  "event CampaignCreated(uint256 indexed id, address indexed campaign, address indexed creator, address token, address rewardToken, uint256 totalLocked, string keyword)",
-];
-const REGISTRY_ABI = [
-  "function handleOf(address) view returns (string)",
-  "function registerHandle(string calldata xHandle, bytes calldata attestation) external",
-];
-
-// A read-only provider for calls that don't need a connected wallet (e.g. checking
-// Registry.handleOf before/without a signer). Memoized so it's only constructed once.
-let _readProvider = null;
-function readProvider(){
-  if(!window.ethers){ throw new Error('web3 library failed to load'); }
-  if(!_readProvider) _readProvider = new window.ethers.JsonRpcProvider(SCP_CONFIG.RPC_URL);
-  return _readProvider;
-}
 
 /* ===================== SOLANA (contracts-solana/) ===================== */
 // Raw instruction-building against sho_solana / sso_solana -- no Anchor TS client (no
@@ -1046,15 +981,13 @@ async function fetchSolanaHandleLink(programId, wallet){
   return {xHandle};
 }
 
-// Direct port of registry_solana/src/state.rs::normalized_handle_key -- ASCII-lowercase, then
-// Keccak-256 (via the already-vendored ethers.js, not Web Crypto's sha256 -- Solana's native
-// keccak syscall is real Keccak-256, not NIST SHA3-256, and ethers.keccak256 is a raw
-// Keccak-256 primitive independent of any EVM-specific encoding, same reuse this project's
-// Node code already makes in solanaMerkleTree.js).
+// Direct port of registry_solana/src/state.rs::normalized_handle_key -- lowercases ASCII A-Z
+// only (not a full Unicode case-fold, matching is_ascii_uppercase() on the Rust side exactly
+// -- X handles are ASCII-only), then Keccak-256 via the vendored js-sha3 (not Web Crypto's
+// sha256 -- Solana's native keccak syscall is real Keccak-256, not NIST SHA3-256).
 function normalizedHandleKeyBytes(xHandle){
-  const lower = xHandle.toLowerCase();
-  const hashHex = window.ethers.keccak256(new TextEncoder().encode(lower));
-  return hexToBytes32(hashHex);
+  const lower = xHandle.replace(/[A-Z]/g, c => String.fromCharCode(c.charCodeAt(0)+32));
+  return new Uint8Array(window.keccak256.array(new TextEncoder().encode(lower)));
 }
 
 function base64ToBytes(b64){
@@ -1140,46 +1073,13 @@ function shortAddr(addr){
   if(!addr) return '';
   return addr.slice(0,6)+'...'+addr.slice(-4);
 }
-function explorerAddressUrl(addr){ return `${SCP_CONFIG.EXPLORER_URL}/address/${addr}`; }
-function explorerTxUrl(hash){ return `${SCP_CONFIG.EXPLORER_URL}/tx/${hash}`; }
-// network-aware versions -- a campaign's own `network` ('evm' | 'solana') decides which
-// chain's explorer a link should point at, since the two EXPLORER_URL bases aren't
-// interchangeable (see solanaExplorerAddressUrl/solanaExplorerTxUrl in the Solana section
-// below for the Solana half these delegate to).
-function campaignExplorerAddressUrl(network, addr){ return network==='solana' ? solanaExplorerAddressUrl(addr) : explorerAddressUrl(addr); }
-function campaignExplorerTxUrl(network, hash){ return network==='solana' ? solanaExplorerTxUrl(hash) : explorerTxUrl(hash); }
 
-// Best-effort human message out of an ethers/JSON-RPC error -- these nest the actually useful
+// Best-effort human message out of a wallet/RPC error -- these nest the actually useful
 // string a few different ways depending on where the failure happened (wallet rejection vs.
-// a contract revert vs. a network error), so check the specific spots before falling back to
-// whatever's in .message (often a wall of raw RPC JSON).
-// Best-effort decode of a custom-error revert ethers itself can't name (see KNOWN_ERRORS_ABI
-// above) -- checks the handful of raw-data spots a failed call's error can carry that data in,
-// depending on where in the request pipeline it surfaced.
-function decodeKnownError(e){
-  const data = e?.data || e?.info?.error?.data || e?.error?.data || e?.revert?.data;
-  if(!data || typeof data !== 'string') return null;
-  try {
-    const parsed = KNOWN_ERRORS_IFACE.parseError(data);
-    if(!parsed) return null;
-    if(parsed.name==='ERC20InsufficientBalance'){
-      const [,balance,needed] = parsed.args;
-      return `Insufficient token balance: wallet has ${fmtTokenAmount(balance)}, needs ${fmtTokenAmount(needed)}.`;
-    }
-    if(parsed.name==='ERC20InsufficientAllowance'){
-      const [,allowance,needed] = parsed.args;
-      return `Insufficient allowance: approved ${fmtTokenAmount(allowance)}, needs ${fmtTokenAmount(needed)}.`;
-    }
-    if(parsed.name==='OwnableUnauthorizedAccount'){
-      return `Connected wallet (${shortAddr(parsed.args[0])}) is not authorized to call this -- wrong wallet connected?`;
-    }
-  } catch(err){ /* not one of the errors we know how to decode */ }
-  return null;
-}
+// an on-chain program error vs. a network error), so check the specific spots before falling
+// back to whatever's in .message (often a wall of raw RPC JSON).
 function shortError(e){
   if(!e) return 'unknown error';
-  const decoded = decodeKnownError(e);
-  if(decoded) return decoded;
   return e.reason || e.shortMessage || e?.info?.error?.message || e?.error?.message || e.message || String(e);
 }
 
@@ -1187,26 +1087,6 @@ function parseQuery(qs){
   const out = {};
   new URLSearchParams(qs||'').forEach((v,k)=>{ out[k]=v; });
   return out;
-}
-
-// Prompts a wallet switch to Robinhood Chain Testnet, adding it first if the wallet has never
-// seen this chain before (error code 4902 is EIP-3085's signal for exactly that case).
-async function ensureChain(ethereum){
-  try {
-    await ethereum.request({ method:'wallet_switchEthereumChain', params:[{chainId:CHAIN_ID_HEX}] });
-  } catch(switchErr){
-    if(switchErr && switchErr.code===4902){
-      await ethereum.request({ method:'wallet_addEthereumChain', params:[{
-        chainId: CHAIN_ID_HEX,
-        chainName: SCP_CONFIG.CHAIN_NAME,
-        nativeCurrency: { name: SCP_CONFIG.NATIVE_SYMBOL, symbol: SCP_CONFIG.NATIVE_SYMBOL, decimals: 18 },
-        rpcUrls: [SCP_CONFIG.RPC_URL],
-        blockExplorerUrls: [SCP_CONFIG.EXPLORER_URL],
-      }]});
-    } else {
-      throw switchErr;
-    }
-  }
 }
 
 /* ===================== API DATA LAYER ===================== */
@@ -1253,7 +1133,7 @@ function secondsToDurationLabel(s){ return Math.round(s/86400)+'D'; }
 // Maps a shoRoutes.js campaign summary onto the shape CampaignCard/SHODetail already render.
 function normalizeShoCampaign(c){
   return {
-    network: c.network || 'evm', // 'evm' | 'solana' -- see contracts-solana/README.md
+    network: c.network || 'solana',
     id: c.id,
     token: c.token || shortAddr(c.tokenAddress),
     name: c.name || c.token || shortAddr(c.tokenAddress),
@@ -1276,7 +1156,7 @@ function normalizeShoCampaign(c){
 }
 function normalizeSsoCampaign(c){
   return {
-    network: c.network || 'evm',
+    network: c.network || 'solana',
     id: c.id,
     token: c.token || shortAddr(c.tokenAddress),
     name: c.name || c.token || shortAddr(c.tokenAddress),
@@ -1334,7 +1214,14 @@ function fmtUSD(n){ return '$'+fmtNum(n); }
 // that computes a claim.
 function fmtTokenAmount(raw, decimals){
   if(raw==null) return 0;
-  try { return Number(window.ethers.formatUnits(raw, decimals ?? 18)); } catch(e){ return 0; }
+  try {
+    const d = decimals ?? 18;
+    const neg = typeof raw==='string' && raw.startsWith('-');
+    const v = BigInt(neg ? raw.slice(1) : raw);
+    const base = 10n ** BigInt(d);
+    const whole = v / base, frac = (v % base).toString().padStart(d, '0').replace(/0+$/, '');
+    return Number((neg?'-':'') + (frac ? `${whole}.${frac}` : `${whole}`));
+  } catch(e){ return 0; }
 }
 function pctToNext(mcap, tiers){
   const next = tiers.find(t=>t.value>mcap) || tiers[tiers.length-1];
@@ -1366,102 +1253,10 @@ function useHashRoute(){
   return [route, go];
 }
 
-// Real wallet connection (window.ethereum / EIP-1193, e.g. MetaMask) plus the wallet's actual
-// on-chain X-handle link (Registry.handleOf) -- replaces useMockUser's instant fake connect.
-// xhandle is deliberately never cached in localStorage: Registry.handleOf(wallet) is the one
-// source of truth (PRD §12.3-12.4), so this always re-reads it rather than risk showing a
-// stale cached handle after a wallet switch or a fresh registerHandle() call elsewhere.
-function useWallet(){
-  const [wallet, setWallet] = useState(null);
-  const [xhandle, setXhandle] = useState(null);
-  const [connecting, setConnecting] = useState(false);
-  const [chainOk, setChainOk] = useState(true);
-
-  const refreshXHandle = useCallback(async (addr)=>{
-    const target = addr || wallet;
-    if(!target){ setXhandle(null); return; }
-    try {
-      const registry = new window.ethers.Contract(SCP_CONFIG.REGISTRY_ADDRESS, REGISTRY_ABI, readProvider());
-      const handle = await registry.handleOf(target);
-      setXhandle(handle && handle.length ? handle : null);
-    } catch(e){
-      console.error('failed to read Registry.handleOf', e);
-    }
-  }, [wallet]);
-
-  const applyAccounts = useCallback((accounts)=>{
-    const addr = accounts && accounts[0] ? window.ethers.getAddress(accounts[0]) : null;
-    setWallet(addr);
-    if(addr) refreshXHandle(addr); else setXhandle(null);
-  }, [refreshXHandle]);
-
-  useEffect(()=>{
-    const {ethereum} = window;
-    if(!ethereum) return;
-    // Silent -- eth_accounts never prompts, so this only restores a connection the site
-    // already has permission for (e.g. after a reload), it never pops MetaMask on its own.
-    ethereum.request({method:'eth_accounts'}).then(applyAccounts).catch(()=>{});
-    ethereum.request({method:'eth_chainId'}).then(id=> setChainOk(id===CHAIN_ID_HEX)).catch(()=>{});
-    const onAccounts = (accounts)=> applyAccounts(accounts);
-    const onChain = (id)=> setChainOk(id===CHAIN_ID_HEX);
-    ethereum.on && ethereum.on('accountsChanged', onAccounts);
-    ethereum.on && ethereum.on('chainChanged', onChain);
-    return ()=>{
-      ethereum.removeListener && ethereum.removeListener('accountsChanged', onAccounts);
-      ethereum.removeListener && ethereum.removeListener('chainChanged', onChain);
-    };
-    // eslint-disable-next-line
-  }, []);
-
-  const connectWallet = useCallback(async ()=>{
-    const {ethereum} = window;
-    if(!ethereum){
-      alert('No wallet extension found. Install MetaMask (or another EIP-1193 wallet) to continue.');
-      return;
-    }
-    setConnecting(true);
-    try {
-      const accounts = await ethereum.request({method:'eth_requestAccounts'});
-      applyAccounts(accounts);
-      await ensureChain(ethereum);
-      setChainOk(true);
-    } catch(e){
-      console.error(e);
-      alert('Wallet connection failed: '+shortError(e));
-    } finally {
-      setConnecting(false);
-    }
-  }, [applyAccounts]);
-
-  // Kicks off the real OAuth 2.0 (PKCE) redirect to ../registration-service. Requires a
-  // connected wallet since the attestation it comes back with is bound to that address --
-  // callers already gate this behind !!wallet (see Register/SSODetail).
-  const connectX = useCallback(()=>{
-    if(!wallet) return;
-    window.location.href = `${SCP_CONFIG.REGISTRATION_SERVICE_URL}/auth/x/start?wallet=${wallet}`;
-  }, [wallet]);
-
-  const disconnect = useCallback(()=>{
-    // A dapp can't force MetaMask to actually disconnect (no permission-revoke API); this
-    // just forgets the connection locally, matching the mock's own disconnect semantics.
-    setWallet(null); setXhandle(null);
-  }, []);
-
-  const getSigner = useCallback(async ()=>{
-    if(!window.ethereum) throw new Error('no wallet extension found');
-    const provider = new window.ethers.BrowserProvider(window.ethereum);
-    await ensureChain(window.ethereum);
-    return provider.getSigner();
-  }, []);
-
-  return {wallet, xhandle, connecting, chainOk, connectWallet, connectX, disconnect, getSigner, refreshXHandle};
-}
-
 // Solana wallet connection via whatever injects window.solana -- Phantom's own provider
-// shape, which Solflare/Backpack also implement for compatibility. Mirrors useWallet()
-// above as closely as the two chains' wallet APIs allow: silent eth_accounts-style restore
-// on mount (connect({onlyIfTrusted:true}) never prompts), connect/disconnect listeners,
-// an explicit connectSolanaWallet() for the user-initiated case.
+// shape, which Solflare/Backpack also implement for compatibility. Silent eth_accounts-style
+// restore on mount (connect({onlyIfTrusted:true}) never prompts), connect/disconnect
+// listeners, an explicit connectSolanaWallet() for the user-initiated case.
 function useSolanaWallet(){
   const [publicKey, setPublicKey] = useState(null); // a window.solanaWeb3.PublicKey, or null
   const [connecting, setConnecting] = useState(false);
@@ -1504,10 +1299,9 @@ function useSolanaWallet(){
     setPublicKey(null);
   }, []);
 
-  // Solana counterpart of useWallet()'s connectX: kicks off the same OAuth 2.0 (PKCE)
-  // redirect to ../registration-service, just tagged ?network=solana so that service
-  // validates a base58 address and takes the co-signer attestation path instead of signing a
-  // fixed digest -- see registration-service/README.md's own Solana section.
+  // Kicks off the OAuth 2.0 (PKCE) redirect to ../registration-service, tagged
+  // ?network=solana so that service validates a base58 address and takes the co-signer
+  // attestation path -- see registration-service/README.md's own Solana section.
   const connectXSolana = useCallback(()=>{
     if(!publicKey) return;
     window.location.href = `${SCP_CONFIG.REGISTRATION_SERVICE_URL}/auth/x/start?network=solana&wallet=${publicKey.toBase58()}`;
@@ -1742,7 +1536,7 @@ function Landing({go}){
             </div>
           </div>
         </div>
-        <div className="stats-note">Campaign counts are live from {SCP_CONFIG.CHAIN_NAME}. Reward pool / distributed totals above are still illustrative -- no aggregate-across-campaigns endpoint exists yet.</div>
+        <div className="stats-note">Campaign counts are live from Solana {SCP_CONFIG.SOLANA_CLUSTER}. Reward pool / distributed totals above are still illustrative -- no aggregate-across-campaigns endpoint exists yet.</div>
       </div>
 
       <div className="wrap section">
@@ -1806,7 +1600,7 @@ function Landing({go}){
 
       <div className="wrap footer">
         <span style={{display:'inline-flex',alignItems:'center',gap:6}}><IcoLock size={12}/>Diamond Hand &middot; live on testnet contracts</span>
-        <span style={{display:'inline-flex',alignItems:'center',gap:6}}><IcoLayers size={12}/>{SCP_CONFIG.CHAIN_NAME} &middot; chain ID {SCP_CONFIG.CHAIN_ID}</span>
+        <span style={{display:'inline-flex',alignItems:'center',gap:6}}><IcoLayers size={12}/>Solana {SCP_CONFIG.SOLANA_CLUSTER}</span>
         <a href="https://x.com/Diamondhand_lfg" target="_blank" rel="noopener noreferrer" style={{display:'inline-flex',alignItems:'center',gap:6,color:'inherit',textDecoration:'none'}}><IcoX size={12}/>Follow on X</a>
       </div>
     </div>
@@ -2222,16 +2016,10 @@ function ShareCardModal({kind, role, campaign, standing, onClose}){
 
 /* ===================== SHO DETAIL ===================== */
 
-function SHODetail({id, go, user, solanaUser, notify}){
+function SHODetail({id, go, solanaUser, notify}){
   const [refreshTick, setRefreshTick] = useState(0);
   const {loading, data, error} = useApiFetch(`/sho/campaigns/${id}`, [id, refreshTick]);
   const c = useMemo(()=> data ? normalizeShoCampaign(data) : null, [data]);
-  // No /tokens/:address lookup for a Solana campaign -- that endpoint is EVM-only
-  // (ethers.isAddress rejects a base58 mint and returns a clean 400), so skip the guaranteed-
-  // to-fail request rather than let useApiFetch log a noisy failure every load.
-  const tokenProfile = useApiFetch(c && c.network!=='solana' ? `/tokens/${c.tokenAddress}` : null, [c && c.tokenAddress, c && c.network]);
-  const standings = useApiFetch(user.wallet ? `/wallets/${user.wallet}/standings` : null, [user.wallet, refreshTick]);
-  const claims = useApiFetch(user.wallet ? `/wallets/${user.wallet}/claims` : null, [user.wallet, refreshTick]);
   const [claiming, setClaiming] = useState(null);
   const [shareRole, setShareRole] = useState(null); // null | 'creator' | 'participant'
 
@@ -2241,54 +2029,27 @@ function SHODetail({id, go, user, solanaUser, notify}){
   const tiers = campaignTiers(c);
   const {next, pct} = pctToNext(c.mcap||0, tiers);
   const allTiersReached = c.mcap!=null && c.mcap >= tiers[tiers.length-1].value;
-  const profile = tokenProfile.data;
-  // Solana standings/claims never populate: /wallets/:address/{standings,claims} are keyed by
-  // an EVM wallet address (user.wallet), and there's no Solana-wallet equivalent endpoint yet
-  // (see docs/MAINNET_CHECKLIST.md's Phase 2) -- myStanding/myClaims just stay empty for a
-  // Solana campaign, which is honest (not wrong), not a crash.
-  const myStanding = standings.data ? standings.data.sho.find(s=>s.campaignAddress.toLowerCase()===c.id.toLowerCase()) : null;
-  const myClaims = claims.data ? claims.data.claims.filter(cl=>cl.factory==='sho' && cl.campaignAddress.toLowerCase()===c.id.toLowerCase()) : [];
+  // No standings/claims aggregation endpoint exists for a Solana wallet yet (see
+  // docs/MAINNET_CHECKLIST.md's Phase 2), so there's nothing to pre-populate "your position"
+  // or per-wallet milestone status with -- myStanding/myClaims stay empty, which is honest
+  // (not wrong), not a crash. The claim-proof API call in doClaim is the real eligibility
+  // check either way.
+  const myStanding = null;
+  const myClaims = [];
   const anyOpen = c.milestones.some(m=>m.status==='pending'||m.status==='active');
 
   const doClaim = async (m)=>{
-    if(c.network==='solana'){
-      // No Solana-wallet standings/claims endpoint exists yet (see the comment above
-      // myStanding/myClaims), so there's no local pre-check to run here -- the claim-proof
-      // API call below is itself the real check (404s if this wallet isn't on the snapshot),
-      // same as it's always been for the EVM path's own server-side verification.
-      if(!solanaUser.publicKey){ notify('Connect a Solana wallet first to claim.'); return; }
-      setClaiming(m.index);
-      try {
-        const res = await fetch(`${SCP_CONFIG.API_BASE_URL}/campaigns/${c.id}/claim-proof?wallet=${solanaUser.publicKey.toBase58()}&index=${m.index}`);
-        const body = await res.json();
-        if(!res.ok) throw new Error(body.error || 'failed to fetch claim proof');
-        const rewardMint = (c.rewardTokenAddress && c.rewardTokenAddress !== NATIVE_SOL_SENTINEL) ? c.rewardTokenAddress : null;
-        await submitShoClaimSolana({
-          provider: solanaUser.provider, campaignAddress: c.id, milestoneIndex: m.index,
-          amountRaw: body.amount, proof: body.proof, rewardMint,
-        });
-        notify(`Claimed the ${m.tier} tier.`);
-        setRefreshTick(t=>t+1);
-      } catch(e){
-        notify('Claim failed: '+shortError(e));
-      } finally {
-        setClaiming(null);
-      }
-      return;
-    }
-    if(!user.wallet){ notify('Connect a wallet first to claim.'); return; }
-    const mine = myClaims.find(cl=>cl.index===m.index);
-    if(!mine){ notify("You're not on this milestone's leaderboard snapshot -- nothing to claim."); return; }
+    if(!solanaUser.publicKey){ notify('Connect a Solana wallet first to claim.'); return; }
     setClaiming(m.index);
     try {
-      const res = await fetch(`${SCP_CONFIG.API_BASE_URL}/campaigns/${c.id}/claim-proof?wallet=${user.wallet}&index=${m.index}`);
+      const res = await fetch(`${SCP_CONFIG.API_BASE_URL}/campaigns/${c.id}/claim-proof?wallet=${solanaUser.publicKey.toBase58()}&index=${m.index}`);
       const body = await res.json();
       if(!res.ok) throw new Error(body.error || 'failed to fetch claim proof');
-      const signer = await user.getSigner();
-      const campaign = new window.ethers.Contract(c.id, CAMPAIGN_ABI, signer);
-      const tx = await campaign.claim(m.index, body.amount, body.proof);
-      notify('Claim submitted -- waiting for confirmation...');
-      await tx.wait();
+      const rewardMint = (c.rewardTokenAddress && c.rewardTokenAddress !== NATIVE_SOL_SENTINEL) ? c.rewardTokenAddress : null;
+      await submitShoClaimSolana({
+        provider: solanaUser.provider, campaignAddress: c.id, milestoneIndex: m.index,
+        amountRaw: body.amount, proof: body.proof, rewardMint,
+      });
       notify(`Claimed the ${m.tier} tier.`);
       setRefreshTick(t=>t+1);
     } catch(e){
@@ -2297,6 +2058,8 @@ function SHODetail({id, go, user, solanaUser, notify}){
       setClaiming(null);
     }
   };
+
+  const myWallet = solanaUser.publicKey ? solanaUser.publicKey.toBase58() : null;
 
   return (
     <div className="page">
@@ -2308,10 +2071,9 @@ function SHODetail({id, go, user, solanaUser, notify}){
             <div className="camp-meta">Creator {shortAddr(c.creator)} &middot; {c.window} window &middot; Top {c.size} &middot; {c.duration} duration</div>
           </div>
           <div style={{display:'flex',gap:8,alignItems:'center'}}>
-            {user.wallet && c.creator && user.wallet.toLowerCase()===c.creator.toLowerCase() && (
+            {myWallet && c.creator && myWallet===c.creator && (
               <Btn kind="outline" size="sm" icon={IcoShare} onClick={()=>setShareRole('creator')}>Share</Btn>
             )}
-            {c.network==='solana' && <Tag kind="neutral">Solana</Tag>}
             <Tag kind="sho">{anyOpen ? 'Active' : 'Completed'}</Tag>
           </div>
         </div>
@@ -2343,18 +2105,12 @@ function SHODetail({id, go, user, solanaUser, notify}){
                       </div>
                     </div>
                     {m.status==='claimable' && walletStatus!=='claimed' && (
-                      c.network==='solana'
-                        // No standings/claims endpoint exists yet for a Solana wallet (see
-                        // myStanding/myClaims above), so eligibility can't be shown ahead of
-                        // time the way the EVM "Not eligible" tag does -- the claim attempt
-                        // itself is the real check, surfaced via doClaim's own notify() on a
-                        // 404 from the API.
-                        ? (solanaUser.publicKey
-                            ? <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===m.index} onClick={()=>doClaim(m)}>{claiming===m.index?'Claiming…':'Claim'}</Btn>
-                            : <Btn size="sm" icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>Connect wallet</Btn>)
-                        : (mine
-                            ? <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===m.index} onClick={()=>doClaim(m)}>{claiming===m.index?'Claiming…':'Claim'}</Btn>
-                            : (user.wallet ? <Tag kind="neutral">Not eligible</Tag> : <Btn size="sm" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>))
+                      // No standings/claims endpoint exists yet for a Solana wallet, so
+                      // eligibility can't be shown ahead of time -- the claim attempt itself
+                      // is the real check, surfaced via doClaim's own notify() on a 404.
+                      myWallet
+                        ? <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===m.index} onClick={()=>doClaim(m)}>{claiming===m.index?'Claiming…':'Claim'}</Btn>
+                        : <Btn size="sm" icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>Connect wallet</Btn>
                     )}
                     {walletStatus==='claimed' && <Tag kind="sho" icon={IcoCheckCirc}>Claimed</Tag>}
                   </div>
@@ -2370,11 +2126,11 @@ function SHODetail({id, go, user, solanaUser, notify}){
                   <thead><tr><th>#</th><th>Wallet</th><th>Net-buy volume</th><th>Share</th></tr></thead>
                   <tbody>
                     {(c.topLeaderboard||[]).slice(0,10).map((r,i)=>{
-                      const isMe = !!(user.wallet && r.wallet.toLowerCase()===user.wallet.toLowerCase());
+                      const isMe = !!(myWallet && r.wallet===myWallet);
                       return (
                         <tr key={i} className={isMe ? 'me':''}>
                           <td className="rank">{r.rank}</td>
-                          <td className="addr mono">{isMe ? user.wallet : shortAddr(r.wallet)}</td>
+                          <td className="addr mono">{isMe ? myWallet : shortAddr(r.wallet)}</td>
                           <td className="mono">${fmtNum(fmtTokenAmount(r.score))}</td>
                           <td className="bar-cell"><div className="mini-bar"><div style={{width:(100-i*8)+'%'}}></div></div></td>
                         </tr>
@@ -2385,8 +2141,6 @@ function SHODetail({id, go, user, solanaUser, notify}){
                     )}
                   </tbody>
                 </table>
-                {myStanding && myStanding.rank>10 &&
-                  <div className="camp-meta" style={{marginTop:10}}>Your rank: #{myStanding.rank} &middot; ${fmtNum(fmtTokenAmount(myStanding.score))} net-buy volume (outside top 10 shown above)</div>}
               </div>
             </div>
           </div>
@@ -2397,37 +2151,25 @@ function SHODetail({id, go, user, solanaUser, notify}){
               <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
                 <div className="token-mark">{c.token.replace('$','').slice(0,1)}</div>
                 <div>
-                  <div style={{fontWeight:600,fontSize:14}}>{(profile && profile.name) || c.name}</div>
+                  <div style={{fontWeight:600,fontSize:14}}>{c.name}</div>
                   <div className="mono" style={{fontSize:12,color:'var(--text-dim)'}}>{c.token}</div>
                 </div>
               </div>
-              <div className="kv"><span className="k"><IcoGlobe size={13}/> Website</span><span className="v">{(profile && profile.website) || '—'}</span></div>
-              <div className="kv"><span className="k"><IcoX size={13}/> Twitter / X</span><span className="v">{(profile && profile.twitter) || '—'}</span></div>
               <div className="kv"><span className="k">Current mcap</span><span className="v">{c.mcap==null ? 'TWAP pending' : fmtUSD(c.mcap)}</span></div>
               <div className="kv"><span className="k">ATH mcap</span><span className="v" title="Not tracked yet -- no historical mcap index exists">—</span></div>
-              <div className="kv"><span className="k"><IcoUsers size={13}/> Holders</span><span className="v">{(profile && profile.holders!=null) ? profile.holders.toLocaleString() : '—'}</span></div>
-              <div className="kv"><span className="k">Contract</span><span className="v mono" style={{fontSize:11}}><a href={campaignExplorerAddressUrl(c.network, c.tokenAddress)} target="_blank" rel="noopener noreferrer">{shortAddr(c.tokenAddress)}</a></span></div>
+              <div className="kv"><span className="k">Mint</span><span className="v mono" style={{fontSize:11}}><a href={solanaExplorerAddressUrl(c.tokenAddress)} target="_blank" rel="noopener noreferrer">{shortAddr(c.tokenAddress)}</a></span></div>
             </div>
 
             <div className="panel">
               <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoWallet size={13}/>Your position</div>
-              {user.wallet ? (
-                myStanding ? (
-                  <div className="you-card">
-                    <div className="kv"><span className="k">Wallet</span><span className="v">{shortAddr(user.wallet)}</span></div>
-                    <div className="kv"><span className="k">Rank this window</span><span className="v">#{myStanding.rank}</span></div>
-                    <div className="kv"><span className="k">Net-buy volume</span><span className="v">{fmtUSD(fmtTokenAmount(myStanding.score))}</span></div>
-                    <div style={{marginTop:12}}><Btn size="sm" kind="outline" icon={IcoShare} onClick={()=>setShareRole('participant')}>Share my standing</Btn></div>
-                  </div>
-                ) : (
-                  <div className="you-card">
-                    <div className="you-empty">You haven't traded {c.token} in the current window yet &mdash; buy to appear on the leaderboard.</div>
-                  </div>
-                )
+              {myWallet ? (
+                <div className="you-card">
+                  <div className="you-empty">No live standings endpoint for Solana wallets yet -- track your rank from the leaderboard above for now.</div>
+                </div>
               ) : (
                 <div className="you-card">
-                  <div className="you-empty">Connect a wallet to see your live rank and claimable rewards.</div>
-                  <div style={{marginTop:12}}><Btn size="sm" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn></div>
+                  <div className="you-empty">Connect a wallet to claim rewards here.</div>
+                  <div style={{marginTop:12}}><Btn size="sm" icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>Connect wallet</Btn></div>
                 </div>
               )}
             </div>
@@ -2440,7 +2182,7 @@ function SHODetail({id, go, user, solanaUser, notify}){
               <div className="kv"><span className="k">Campaign duration</span><span className="v">{c.duration}</span></div>
               <div className="kv"><span className="k">Time remaining</span><span className="v">{c.daysLeft}d</span></div>
               <div className="kv"><span className="k">Protocol fee</span><span className="v">0.5% (taken at open)</span></div>
-              <div className="kv"><span className="k">Campaign contract</span><span className="v mono" style={{fontSize:11}}><a href={campaignExplorerAddressUrl(c.network, c.id)} target="_blank" rel="noopener noreferrer">{shortAddr(c.id)}</a></span></div>
+              <div className="kv"><span className="k">Campaign address</span><span className="v mono" style={{fontSize:11}}><a href={solanaExplorerAddressUrl(c.id)} target="_blank" rel="noopener noreferrer">{shortAddr(c.id)}</a></span></div>
             </div>
           </div>
         </div>
@@ -2452,16 +2194,23 @@ function SHODetail({id, go, user, solanaUser, notify}){
 
 /* ===================== SSO DETAIL ===================== */
 
-function SSODetail({id, go, user, solanaUser, notify}){
+function SSODetail({id, go, solanaUser, notify}){
   const [refreshTick, setRefreshTick] = useState(0);
   const {loading, data, error} = useApiFetch(`/sso/campaigns/${id}`, [id, refreshTick]);
   const c = useMemo(()=> data ? normalizeSsoCampaign(data) : null, [data]);
-  // See SHODetail's identical guard -- /tokens/:address is EVM-only.
-  const tokenProfile = useApiFetch(c && c.network!=='solana' ? `/tokens/${c.tokenAddress}` : null, [c && c.tokenAddress, c && c.network]);
-  const standings = useApiFetch(user.wallet ? `/wallets/${user.wallet}/standings` : null, [user.wallet, refreshTick]);
-  const claims = useApiFetch(user.wallet ? `/wallets/${user.wallet}/claims` : null, [user.wallet, refreshTick]);
   const [claiming, setClaiming] = useState(null);
   const [shareRole, setShareRole] = useState(null); // null | 'creator' | 'participant'
+
+  // Solana X-handle link for "Your position" below -- see Register's identical lookup.
+  const [solanaLink, setSolanaLink] = useState(null);
+  useEffect(()=>{
+    if(!solanaUser.publicKey){ setSolanaLink(null); return; }
+    let cancelled = false;
+    fetchSolanaHandleLink(SCP_CONFIG.REGISTRY_SOLANA_PROGRAM_ID, solanaUser.publicKey)
+      .then(link=>{ if(!cancelled) setSolanaLink(link); })
+      .catch(()=>{ if(!cancelled) setSolanaLink(null); });
+    return ()=>{ cancelled = true; };
+  }, [solanaUser.publicKey]);
 
   if(loading) return <div className="page"><div className="wrap"><div className="empty-state"><h3>Loading campaign&hellip;</h3></div></div></div>;
   if(error || !c) return <EmptyRoute go={go}/>;
@@ -2469,49 +2218,23 @@ function SSODetail({id, go, user, solanaUser, notify}){
   const activeEpoch = c.epochs.find(e=>e.status==='active');
   const epochLabel = activeEpoch ? `Epoch ${activeEpoch.n} of ${c.epochs.length}`
     : c.epochs.every(e=>e.status==='pending') ? 'Not started yet' : 'Between epochs';
-  const profile = tokenProfile.data;
   // See SHODetail's identical note -- no Solana-wallet-keyed standings/claims endpoint yet.
-  const myStanding = standings.data ? standings.data.sso.find(s=>s.campaignAddress.toLowerCase()===c.id.toLowerCase()) : null;
-  const myClaims = claims.data ? claims.data.claims.filter(cl=>cl.factory==='sso' && cl.campaignAddress.toLowerCase()===c.id.toLowerCase()) : [];
+  const myStanding = null;
+  const myClaims = [];
+  const myWallet = solanaUser.publicKey ? solanaUser.publicKey.toBase58() : null;
 
   const doClaim = async (e)=>{
-    if(c.network==='solana'){
-      // See SHODetail's identical guard -- no Solana-wallet standings/claims endpoint yet,
-      // so there's no local pre-check here; the claim-proof API call below is itself the
-      // real check (404s if this wallet isn't on the epoch's snapshot).
-      if(!solanaUser.publicKey){ notify('Connect a Solana wallet first to claim.'); return; }
-      setClaiming(e.index);
-      try {
-        const res = await fetch(`${SCP_CONFIG.API_BASE_URL}/campaigns/${c.id}/claim-proof?wallet=${solanaUser.publicKey.toBase58()}&index=${e.index}`);
-        const body = await res.json();
-        if(!res.ok) throw new Error(body.error || 'failed to fetch claim proof');
-        const rewardMint = (c.rewardTokenAddress && c.rewardTokenAddress !== NATIVE_SOL_SENTINEL) ? c.rewardTokenAddress : null;
-        await submitSsoClaimSolana({
-          provider: solanaUser.provider, campaignAddress: c.id, epochIndex: e.index,
-          amountRaw: body.amount, proof: body.proof, rewardMint,
-        });
-        notify(`Claimed epoch ${e.n}.`);
-        setRefreshTick(t=>t+1);
-      } catch(err){
-        notify('Claim failed: '+shortError(err));
-      } finally {
-        setClaiming(null);
-      }
-      return;
-    }
-    if(!user.wallet){ notify('Connect a wallet first to claim.'); return; }
-    const mine = myClaims.find(cl=>cl.index===e.index);
-    if(!mine){ notify("You're not on this epoch's leaderboard snapshot -- nothing to claim."); return; }
+    if(!solanaUser.publicKey){ notify('Connect a Solana wallet first to claim.'); return; }
     setClaiming(e.index);
     try {
-      const res = await fetch(`${SCP_CONFIG.API_BASE_URL}/campaigns/${c.id}/claim-proof?wallet=${user.wallet}&index=${e.index}`);
+      const res = await fetch(`${SCP_CONFIG.API_BASE_URL}/campaigns/${c.id}/claim-proof?wallet=${solanaUser.publicKey.toBase58()}&index=${e.index}`);
       const body = await res.json();
       if(!res.ok) throw new Error(body.error || 'failed to fetch claim proof');
-      const signer = await user.getSigner();
-      const campaign = new window.ethers.Contract(c.id, CAMPAIGN_ABI, signer);
-      const tx = await campaign.claim(e.index, body.amount, body.proof);
-      notify('Claim submitted -- waiting for confirmation...');
-      await tx.wait();
+      const rewardMint = (c.rewardTokenAddress && c.rewardTokenAddress !== NATIVE_SOL_SENTINEL) ? c.rewardTokenAddress : null;
+      await submitSsoClaimSolana({
+        provider: solanaUser.provider, campaignAddress: c.id, epochIndex: e.index,
+        amountRaw: body.amount, proof: body.proof, rewardMint,
+      });
       notify(`Claimed epoch ${e.n}.`);
       setRefreshTick(t=>t+1);
     } catch(err){
@@ -2531,10 +2254,9 @@ function SSODetail({id, go, user, solanaUser, notify}){
             <div className="camp-meta">Creator {shortAddr(c.creator)} &middot; keyword <b className="mono">{c.keyword}</b> &middot; epoch {c.epochLen}</div>
           </div>
           <div style={{display:'flex',gap:8,alignItems:'center'}}>
-            {user.wallet && c.creator && user.wallet.toLowerCase()===c.creator.toLowerCase() && (
+            {myWallet && c.creator && myWallet===c.creator && (
               <Btn kind="outline" size="sm" icon={IcoShare} onClick={()=>setShareRole('creator')}>Share</Btn>
             )}
-            {c.network==='solana' && <Tag kind="neutral">Solana</Tag>}
             <Tag kind="sso" icon={IcoCalendar}>{epochLabel}</Tag>
           </div>
         </div>
@@ -2573,17 +2295,13 @@ function SSODetail({id, go, user, solanaUser, notify}){
                       </div>
                     </div>
                     {e.status==='claimable' && walletStatus!=='claimed' && (
-                      // See SHODetail's identical branch -- no Solana-wallet standings/claims
-                      // aggregation endpoint exists (myClaims above), so eligibility can't be
-                      // shown ahead of time the way the EVM "Not eligible" tag does; the claim
-                      // attempt itself is the real check (the claim-proof API 404s otherwise).
-                      c.network==='solana'
-                        ? (solanaUser.publicKey
-                            ? <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===e.index} onClick={()=>doClaim(e)}>{claiming===e.index?'Claiming…':'Claim'}</Btn>
-                            : <Btn size="sm" icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>Connect wallet</Btn>)
-                        : (mine
-                            ? <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===e.index} onClick={()=>doClaim(e)}>{claiming===e.index?'Claiming…':'Claim'}</Btn>
-                            : (user.wallet ? <Tag kind="neutral">Not eligible</Tag> : <Btn size="sm" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>))
+                      // No Solana-wallet standings/claims aggregation endpoint exists
+                      // (myClaims above), so eligibility can't be shown ahead of time -- the
+                      // claim attempt itself is the real check (the claim-proof API 404s
+                      // otherwise).
+                      myWallet
+                        ? <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===e.index} onClick={()=>doClaim(e)}>{claiming===e.index?'Claiming…':'Claim'}</Btn>
+                        : <Btn size="sm" icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>Connect wallet</Btn>
                     )}
                     {walletStatus==='claimed' && <Tag kind="sso" icon={IcoCheckCirc}>Claimed</Tag>}
                   </div>
@@ -2599,11 +2317,11 @@ function SSODetail({id, go, user, solanaUser, notify}){
                   <thead><tr><th>#</th><th>Account</th><th>Score</th><th>Share</th></tr></thead>
                   <tbody>
                     {(c.topLeaderboard||[]).slice(0,10).map((r,i)=>{
-                      const isMe = !!(user.wallet && r.wallet.toLowerCase()===user.wallet.toLowerCase());
+                      const isMe = !!(myWallet && r.wallet===myWallet);
                       return (
                         <tr key={i} className={isMe ? 'me':''}>
                           <td className="rank">{r.rank}</td>
-                          <td className="addr mono">{isMe ? (user.xhandle || shortAddr(user.wallet)) : shortAddr(r.wallet)}</td>
+                          <td className="addr mono">{isMe ? ((solanaLink && solanaLink.xHandle) || shortAddr(myWallet)) : shortAddr(r.wallet)}</td>
                           <td className="mono">{fmtNum(r.score)}</td>
                           <td className="bar-cell"><div className="mini-bar"><div style={{width:(100-i*8)+'%'}}></div></div></td>
                         </tr>
@@ -2614,8 +2332,6 @@ function SSODetail({id, go, user, solanaUser, notify}){
                     )}
                   </tbody>
                 </table>
-                {myStanding && myStanding.rank>10 &&
-                  <div className="camp-meta" style={{marginTop:10}}>Your rank: #{myStanding.rank} &middot; {fmtNum(myStanding.score)} engagement score (outside top 10 shown above)</div>}
               </div>
             </div>
           </div>
@@ -2626,32 +2342,20 @@ function SSODetail({id, go, user, solanaUser, notify}){
               <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
                 <div className="token-mark">{c.token.replace('$','').replace('#','').slice(0,1)}</div>
                 <div>
-                  <div style={{fontWeight:600,fontSize:14}}>{(profile && profile.name) || c.name}</div>
+                  <div style={{fontWeight:600,fontSize:14}}>{c.name}</div>
                   <div className="mono" style={{fontSize:12,color:'var(--text-dim)'}}>{c.token}</div>
                 </div>
               </div>
-              <div className="kv"><span className="k"><IcoGlobe size={13}/> Website</span><span className="v">{(profile && profile.website) || '—'}</span></div>
-              <div className="kv"><span className="k"><IcoX size={13}/> Twitter / X</span><span className="v">{(profile && profile.twitter) || '—'}</span></div>
-              <div className="kv"><span className="k">Current mcap</span><span className="v">{(profile && profile.mcap!=null) ? fmtUSD(profile.mcap) : 'TWAP pending'}</span></div>
               <div className="kv"><span className="k">ATH mcap</span><span className="v" title="Not tracked yet -- no historical mcap index exists">—</span></div>
-              <div className="kv"><span className="k"><IcoUsers size={13}/> Holders</span><span className="v">{(profile && profile.holders!=null) ? profile.holders.toLocaleString() : '—'}</span></div>
-              <div className="kv"><span className="k">Contract</span><span className="v mono" style={{fontSize:11}}><a href={campaignExplorerAddressUrl(c.network, c.tokenAddress)} target="_blank" rel="noopener noreferrer">{shortAddr(c.tokenAddress)}</a></span></div>
+              <div className="kv"><span className="k">Mint</span><span className="v mono" style={{fontSize:11}}><a href={solanaExplorerAddressUrl(c.tokenAddress)} target="_blank" rel="noopener noreferrer">{shortAddr(c.tokenAddress)}</a></span></div>
             </div>
             <div className="panel">
               <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoX size={13}/>Your position</div>
-              {user.xhandle ? (
-                myStanding ? (
-                  <div className="you-card">
-                    <div className="kv"><span className="k">X account</span><span className="v">{user.xhandle}</span></div>
-                    <div className="kv"><span className="k">Rank this epoch</span><span className="v">#{myStanding.rank}</span></div>
-                    <div className="kv"><span className="k">Engagement score</span><span className="v">{fmtNum(myStanding.score)}</span></div>
-                    <div style={{marginTop:12}}><Btn size="sm" kind="outline" icon={IcoShare} onClick={()=>setShareRole('participant')}>Share my standing</Btn></div>
-                  </div>
-                ) : (
-                  <div className="you-card">
-                    <div className="you-empty">You haven't posted {c.keyword} in the current epoch yet &mdash; post to appear in the leaderboard.</div>
-                  </div>
-                )
+              {solanaLink ? (
+                <div className="you-card">
+                  <div className="kv"><span className="k">X account</span><span className="v">{solanaLink.xHandle}</span></div>
+                  <div className="you-empty" style={{marginTop:8}}>No live standings endpoint for Solana wallets yet -- track your rank from the leaderboard above for now.</div>
+                </div>
               ) : (
                 <div className="you-card">
                   <div className="you-empty">Register your X account to appear in the leaderboard and claim rewards.</div>
@@ -2668,7 +2372,7 @@ function SSODetail({id, go, user, solanaUser, notify}){
               <div className="kv"><span className="k">Campaign duration</span><span className="v">{c.duration}</span></div>
               <div className="kv"><span className="k">Min. account age</span><span className="v">30 days</span></div>
               <div className="kv"><span className="k">Min. followers</span><span className="v">25</span></div>
-              <div className="kv"><span className="k">Campaign contract</span><span className="v mono" style={{fontSize:11}}><a href={campaignExplorerAddressUrl(c.network, c.id)} target="_blank" rel="noopener noreferrer">{shortAddr(c.id)}</a></span></div>
+              <div className="kv"><span className="k">Campaign address</span><span className="v mono" style={{fontSize:11}}><a href={solanaExplorerAddressUrl(c.id)} target="_blank" rel="noopener noreferrer">{shortAddr(c.id)}</a></span></div>
             </div>
           </div>
         </div>
@@ -2695,13 +2399,12 @@ function EmptyRoute({go}){
 const SHO_STEPS = ['Token & amount','Reward & ranking','Duration','Milestones','Review'];
 const SSO_STEPS = ['Token & amount','Reward & keyword','Epoch & size','Duration & split','Review'];
 
-function CreateWizard({kind, go, user, solanaUser, notify}){
+function CreateWizard({kind, go, solanaUser, notify}){
   const isSHO = kind==='sho';
   const steps = isSHO ? SHO_STEPS : SSO_STEPS;
   const [step,setStep] = useState(0);
-  const [submitting, setSubmitting] = useState(null); // null | 'approving' | 'creating'
+  const [submitting, setSubmitting] = useState(null); // null | 'creating'
   const [form,setForm] = useState({
-    network:'evm', // 'evm' | 'solana' -- picked once, before a wallet is even connected
     contract:'', token:'',
     amount:'10000000', denom:'token', window:'7D', size:100,
     duration:'30D', keyword:'$MYTOKEN', epochLen:'7D',
@@ -2709,69 +2412,32 @@ function CreateWizard({kind, go, user, solanaUser, notify}){
     msOn: {'100K':true,'250K':true,'1M':true,'5M':true},
   });
   const set = (k,v)=> setForm(f=>({...f,[k]:v}));
-  const isSolana = form.network==='solana';
 
-  // Debounced live lookup against ../api's GET /tokens/:address -- replaces the old
-  // hand-authored TOKEN_REGISTRY map (see api/src/tokenRoutes.js's own header on why this is
-  // "sourced from the real chain instead of a hand-authored map" now). EVM-only: there's no
-  // Solana equivalent yet (the keeper/API don't index Solana at all -- see
-  // contracts-solana/README.md), so Solana just validates the address looks real.
-  const [debouncedAddr, setDebouncedAddr] = useState('');
-  useEffect(()=>{
-    const t = setTimeout(()=> setDebouncedAddr(form.contract.trim()), 400);
-    return ()=>clearTimeout(t);
-  }, [form.contract]);
-  const validEvmAddr = !isSolana && window.ethers && window.ethers.isAddress(debouncedAddr);
-  const tokenLookup = useApiFetch(validEvmAddr ? `/tokens/${debouncedAddr}` : null, [validEvmAddr, debouncedAddr]);
-
+  // No live SPL token metadata lookup exists yet (no keeper/API indexing for it), so this
+  // just validates the mint address looks real rather than resolving a name/ticker the way
+  // GET /tokens/:address once did for EVM.
   const validSolanaMint = useMemo(()=>{
-    if(!isSolana || !form.contract.trim()) return false;
+    if(!form.contract.trim()) return false;
     try { new window.solanaWeb3.PublicKey(form.contract.trim()); return true; } catch(e){ return false; }
-  }, [isSolana, form.contract]);
+  }, [form.contract]);
 
-  const resolved = isSolana
-    ? (validSolanaMint ? {name:'Unverified SPL token', ticker: form.token || 'TOKEN'} : null)
-    : tokenLookup.data;
-
-  useEffect(()=>{
-    if(!isSolana && resolved) setForm(f=> f.token===resolved.ticker ? f : {...f, token:resolved.ticker});
-  }, [isSolana, resolved]);
+  const resolved = validSolanaMint ? {name:'Unverified SPL token', ticker: form.token || 'TOKEN'} : null;
 
   const denomLabel = form.denom==='token' ? (resolved?resolved.ticker:form.token)
-    : form.denom==='eth' ? (isSolana ? 'SOL' : SCP_CONFIG.NATIVE_SYMBOL)
+    : form.denom==='eth' ? 'SOL'
     : form.denom.toUpperCase();
 
-  const networkPicker = (
-    <div className="panel" style={{marginBottom:20}}>
-      <div className="eyebrow" style={{marginBottom:10}}>Network</div>
-      <div className="opt-row">
-        <button className={`opt-btn ${!isSolana?'sel':''}`} disabled={!!submitting} onClick={()=>set('network','evm')}>{SCP_CONFIG.CHAIN_NAME} (EVM)</button>
-        <button className={`opt-btn ${isSolana?'sel':''}`} disabled={!!submitting} onClick={()=>set('network','solana')}>Solana ({SCP_CONFIG.SOLANA_CLUSTER})</button>
-      </div>
-      {isSolana && (
-        <div className="help" style={{marginTop:10}}>
-          Solana support is new: campaigns created here aren&rsquo;t shown in Discover or any
-          leaderboard yet (the keeper and API don&rsquo;t index Solana activity yet), and the
-          on-chain programs themselves have never been deployed anywhere real &mdash; see
-          contracts-solana/README.md.
-        </div>
-      )}
-    </div>
-  );
-
-  const walletConnected = isSolana ? !!solanaUser.publicKey : !!user.wallet;
-  if(!walletConnected){
+  if(!solanaUser.publicKey){
     return (
       <div className="page">
         <div className="wrap" style={{maxWidth:520}}>
           <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand</button> / <button onClick={()=>go(`/${kind}`)}>{isSHO?'SHO':'SSO'}</button> / New</div>
-          {networkPicker}
           <div className="empty-state">
-            <h3>Connect a {isSolana?'Solana':''} wallet to create a campaign</h3>
+            <h3>Connect a Solana wallet to create a campaign</h3>
             <p>The connected wallet becomes the on-chain creator of record and locks the reward pool, so it has to be set before you can configure a campaign.</p>
             <div style={{marginTop:16}}>
-              <Btn icon={IcoWallet} onClick={isSolana?solanaUser.connectSolanaWallet:user.connectWallet}>
-                {isSolana && solanaUser.connecting ? 'Connecting…' : 'Connect wallet'}
+              <Btn icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>
+                {solanaUser.connecting ? 'Connecting…' : 'Connect wallet'}
               </Btn>
             </div>
           </div>
@@ -2789,25 +2455,10 @@ function CreateWizard({kind, go, user, solanaUser, notify}){
   const windowEnumOf = (v)=> v==='24H'?0:v==='7D'?1:2; // Types.LeaderboardWindow / EpochLength ordering
   const durationSecondsOf = (v)=> v==='7D'?7*86400:v==='30D'?30*86400:90*86400;
 
-  // Resolves rewardToken address + the decimals `amount` must be parsed in -- these are
-  // whatever the *reward* denomination uses, not necessarily the tracked token's decimals.
-  async function resolveRewardToken(){
-    if(form.denom==='eth') return {address: window.ethers.ZeroAddress, decimals: 18};
-    if(form.denom==='usdc'){
-      if(!SCP_CONFIG.USDC_ADDRESS) throw new Error('No USDC address configured for this chain yet (SCP_CONFIG.USDC_ADDRESS is empty).');
-      const decimals = await new window.ethers.Contract(SCP_CONFIG.USDC_ADDRESS, ERC20_ABI, readProvider()).decimals().catch(()=>6);
-      return {address: SCP_CONFIG.USDC_ADDRESS, decimals: Number(decimals)};
-    }
-    // 'token' -- the campaigning token itself
-    const decimals = await new window.ethers.Contract(form.contract, ERC20_ABI, readProvider()).decimals().catch(()=>18);
-    return {address: form.contract, decimals: Number(decimals)};
-  }
-
-  // Solana counterpart of resolveRewardToken(). mint=null means native SOL (9 decimals).
-  // No live SPL metadata lookup exists yet, so the 'token' case reads decimals straight off
-  // the mint account itself -- SPL Token's Mint layout puts decimals at a fixed byte offset
-  // (44: 4-byte COption tag + 32-byte authority pubkey for mint_authority, then an 8-byte
-  // supply, then the 1-byte decimals field).
+  // mint=null means native SOL (9 decimals). No live SPL metadata lookup exists yet, so the
+  // 'token' case reads decimals straight off the mint account itself -- SPL Token's Mint
+  // layout puts decimals at a fixed byte offset (44: 4-byte COption tag + 32-byte authority
+  // pubkey for mint_authority, then an 8-byte supply, then the 1-byte decimals field).
   async function resolveSolanaRewardAsset(){
     if(form.denom==='eth') return {mint:null, decimals:9};
     if(form.denom==='usdc'){
@@ -2820,11 +2471,18 @@ function CreateWizard({kind, go, user, solanaUser, notify}){
     return {mint, decimals: info.data[44]};
   }
 
-  const submitSolana = async ()=>{
+  // Raw-integer-string parse at a given decimals count, replacing ethers.parseUnits.
+  function parseUnits(amountStr, decimals){
+    const [whole, frac=''] = String(amountStr||'0').split('.');
+    const fracPadded = (frac+'0'.repeat(decimals)).slice(0, decimals);
+    return BigInt((whole||'0') + fracPadded);
+  }
+
+  const submit = async ()=>{
     if(!resolved){ notify('Enter a valid Solana mint address first.'); return; }
     try {
       const {mint, decimals} = await resolveSolanaRewardAsset();
-      const amountRaw = window.ethers.parseUnits(String(form.amount||'0'), decimals);
+      const amountRaw = parseUnits(form.amount, decimals);
       setSubmitting('creating');
       notify('Submitting campaign creation on Solana...');
       const tokenMint = new window.solanaWeb3.PublicKey(form.contract.trim());
@@ -2860,97 +2518,13 @@ function CreateWizard({kind, go, user, solanaUser, notify}){
     }
   };
 
-  const submit = async ()=>{
-    if(isSolana) return submitSolana();
-    if(!resolved){ notify('Resolve a valid token contract first.'); return; }
-    try {
-      const {address: rewardToken, decimals} = await resolveRewardToken();
-      const amountWei = window.ethers.parseUnits(String(form.amount||'0'), decimals);
-      const signer = await user.getSigner();
-      const factoryAddr = isSHO ? SCP_CONFIG.SHO_FACTORY_ADDRESS : SCP_CONFIG.SSO_FACTORY_ADDRESS;
-
-      // Check the wallet can actually cover this before spending a transaction (and its gas)
-      // finding out -- a failed createCampaign() reverts with an OZ v5 custom error ethers
-      // can't name on its own (see shortError's decodeKnownError), so this is worth catching
-      // here with a clear message rather than only after a failed on-chain attempt.
-      if(rewardToken === window.ethers.ZeroAddress){
-        const ethBalance = await readProvider().getBalance(user.wallet);
-        if(ethBalance < amountWei){
-          throw new Error(`Insufficient ${SCP_CONFIG.NATIVE_SYMBOL} balance: wallet has ${fmtTokenAmount(ethBalance)}, this campaign needs ${form.amount} ${SCP_CONFIG.NATIVE_SYMBOL} (plus gas).`);
-        }
-      } else {
-        const tokenBalance = await new window.ethers.Contract(rewardToken, ERC20_ABI, readProvider()).balanceOf(user.wallet);
-        if(tokenBalance < amountWei){
-          throw new Error(`Insufficient ${denomLabel} balance: wallet has ${fmtTokenAmount(tokenBalance)}, this campaign needs ${form.amount} ${denomLabel}.`);
-        }
-      }
-
-      if(rewardToken !== window.ethers.ZeroAddress){
-        const erc20 = new window.ethers.Contract(rewardToken, ERC20_ABI, signer);
-        const allowance = await erc20.allowance(user.wallet, factoryAddr);
-        if(allowance < amountWei){
-          setSubmitting('approving');
-          notify('Approving the factory to pull the reward pool...');
-          const approveTx = await erc20.approve(factoryAddr, amountWei);
-          await approveTx.wait();
-        }
-      }
-
-      setSubmitting('creating');
-      notify('Submitting campaign creation...');
-      const value = rewardToken===window.ethers.ZeroAddress ? amountWei : 0n;
-      let receipt, factory;
-      if(isSHO){
-        const chosenTiers = MS_TIERS.filter(t=>form.msOn[t.id]);
-        factory = new window.ethers.Contract(factoryAddr, SHO_FACTORY_ABI, signer);
-        const tx = await factory.createCampaign(
-          form.contract, rewardToken, amountWei, windowEnumOf(form.window), form.size,
-          durationSecondsOf(form.duration),
-          chosenTiers.map(t=>MS_TIERS.findIndex(x=>x.id===t.id)),
-          chosenTiers.map(t=>form.ms[t.id]),
-          {value}
-        );
-        receipt = await tx.wait();
-      } else {
-        factory = new window.ethers.Contract(factoryAddr, SSO_FACTORY_ABI, signer);
-        const epochCount = Math.max(1, Math.round(durationSecondsOf(form.duration)/(windowEnumOf(form.epochLen)===0?86400:windowEnumOf(form.epochLen)===1?604800:2592000)));
-        const evenBps = Math.floor(10000/epochCount);
-        const epochBpsList = Array.from({length:epochCount}, (_,i)=> i===epochCount-1 ? 10000-evenBps*(epochCount-1) : evenBps);
-        const tx = await factory.createCampaign(
-          form.contract, rewardToken, amountWei, form.keyword, windowEnumOf(form.epochLen), form.size,
-          durationSecondsOf(form.duration), epochBpsList,
-          {value}
-        );
-        receipt = await tx.wait();
-      }
-
-      // The new clone's address only exists in the CampaignCreated log, not a plain return
-      // value we can read back from a mined tx -- decode it the same way ethers itself
-      // recommends for a non-view function's return data.
-      let campaignAddress = null;
-      for(const log of receipt.logs){
-        try {
-          const parsed = factory.interface.parseLog(log);
-          if(parsed && parsed.name==='CampaignCreated'){ campaignAddress = parsed.args.campaign; break; }
-        } catch(e){ /* not this contract's event, ignore */ }
-      }
-
-      notify(`${form.token} ${isSHO?'SHO':'SSO'} campaign created, 0.5% fee deducted.`);
-      go(campaignAddress ? `/${kind}/${campaignAddress}` : `/${kind}`);
-    } catch(e){
-      notify('Campaign creation failed: '+shortError(e));
-    } finally {
-      setSubmitting(null);
-    }
-  };
-
   return (
     <div className="page">
       <div className="wrap">
         <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand</button> / <button onClick={()=>go(`/${kind}`)}>{isSHO?'SHO':'SSO'}</button> / New</div>
         <div className="page-head">
           <h1>New {isSHO?'Strong Hold':'Strong Shill'} Offering</h1>
-          <Tag kind={isSHO?'sho':'sso'}>{isSolana ? `Solana ${SCP_CONFIG.SOLANA_CLUSTER}` : SCP_CONFIG.CHAIN_NAME}</Tag>
+          <Tag kind={isSHO?'sho':'sso'}>{`Solana ${SCP_CONFIG.SOLANA_CLUSTER}`}</Tag>
         </div>
 
         <div className="wizard">
@@ -2966,35 +2540,19 @@ function CreateWizard({kind, go, user, solanaUser, notify}){
             {step===0 && (
               <>
                 <div className="field">
-                  <label>Token to track &mdash; {isSolana ? 'mint address' : 'contract address'}</label>
-                  <input type="text" className="mono" value={form.contract} onChange={e=>set('contract',e.target.value)} placeholder={isSolana ? 'Base58 mint address…' : '0x...'}/>
-                  {form.contract.trim()==='' ? null : isSolana ? (
-                    validSolanaMint ? (
-                      <div className="token-resolved"><IcoCheckCirc size={14}/> Looks like a valid Solana address &mdash; no live metadata lookup yet, name it below.</div>
-                    ) : (
-                      <div className="token-resolved bad"><IcoInfo size={14}/> Not a valid base58 Solana address.</div>
-                    )
-                  ) : tokenLookup.loading ? (
-                    <div className="token-resolved">Looking up on {SCP_CONFIG.CHAIN_NAME}&hellip;</div>
-                  ) : resolved ? (
-                    <div className="token-resolved">
-                      <IcoCheckCirc size={14}/> Resolved <b>{resolved.name}</b> <span className="mono">{resolved.ticker}</span>
-                    </div>
+                  <label>Token to track &mdash; mint address</label>
+                  <input type="text" className="mono" value={form.contract} onChange={e=>set('contract',e.target.value)} placeholder="Base58 mint address…"/>
+                  {form.contract.trim()==='' ? null : validSolanaMint ? (
+                    <div className="token-resolved"><IcoCheckCirc size={14}/> Looks like a valid Solana address &mdash; no live metadata lookup yet, name it below.</div>
                   ) : (
-                    <div className="token-resolved bad">
-                      <IcoInfo size={14}/> Not a recognized ERC20 on {SCP_CONFIG.CHAIN_NAME} &mdash; check the address.
-                    </div>
+                    <div className="token-resolved bad"><IcoInfo size={14}/> Not a valid base58 Solana address.</div>
                   )}
-                  <div className="help">{isSolana
-                    ? 'The SPL mint whose activity this campaign tracks. Solana token verification isn’t wired up yet (no keeper/API indexing), so paste the mint address directly.'
-                    : 'The Pons.family (or graduated Uniswap V4) token whose activity this campaign tracks — net-buy volume for SHO, or the account posting about it for SSO. Added by contract, never by typing a ticker.'}</div>
+                  <div className="help">The SPL mint whose activity this campaign tracks. Solana token verification isn’t wired up yet (no keeper/API indexing), so paste the mint address directly.</div>
                 </div>
-                {isSolana && (
-                  <div className="field">
-                    <label>Token symbol (display only)</label>
-                    <input type="text" value={form.token} onChange={e=>set('token', e.target.value)} placeholder="$MYTOKEN"/>
-                  </div>
-                )}
+                <div className="field">
+                  <label>Token symbol (display only)</label>
+                  <input type="text" value={form.token} onChange={e=>set('token', e.target.value)} placeholder="$MYTOKEN"/>
+                </div>
                 <div className="field">
                   <label>Amount to lock</label>
                   <input type="text" value={form.amount} onChange={e=>set('amount',e.target.value)}/>
@@ -3008,11 +2566,11 @@ function CreateWizard({kind, go, user, solanaUser, notify}){
                 <div className="field">
                   <label>Reward denomination</label>
                   <div className="opt-row">
-                    {[['token', form.token],['usdc','USDC'],['eth', isSolana?'SOL':SCP_CONFIG.NATIVE_SYMBOL]].map(([v,l])=>(
-                      <button key={v} className={`opt-btn ${form.denom===v?'sel':''}`} disabled={v==='usdc' && !(isSolana?SCP_CONFIG.SOLANA_USDC_MINT:SCP_CONFIG.USDC_ADDRESS)} onClick={()=>set('denom',v)}>{l}</button>
+                    {[['token', form.token],['usdc','USDC'],['eth', 'SOL']].map(([v,l])=>(
+                      <button key={v} className={`opt-btn ${form.denom===v?'sel':''}`} disabled={v==='usdc' && !SCP_CONFIG.SOLANA_USDC_MINT} onClick={()=>set('denom',v)}>{l}</button>
                     ))}
                   </div>
-                  {!(isSolana?SCP_CONFIG.SOLANA_USDC_MINT:SCP_CONFIG.USDC_ADDRESS) && <div className="help">USDC isn&rsquo;t deployed on {isSolana?`Solana ${SCP_CONFIG.SOLANA_CLUSTER}`:SCP_CONFIG.CHAIN_NAME} yet, so that option is disabled here.</div>}
+                  {!SCP_CONFIG.SOLANA_USDC_MINT && <div className="help">USDC isn&rsquo;t deployed on Solana {SCP_CONFIG.SOLANA_CLUSTER} yet, so that option is disabled here.</div>}
                 </div>
                 <div className="field">
                   <label>Leaderboard window</label>
@@ -3038,11 +2596,11 @@ function CreateWizard({kind, go, user, solanaUser, notify}){
                 <div className="field">
                   <label>Reward denomination</label>
                   <div className="opt-row">
-                    {[['token', form.token],['usdc','USDC'],['eth', isSolana?'SOL':SCP_CONFIG.NATIVE_SYMBOL]].map(([v,l])=>(
-                      <button key={v} className={`opt-btn ${form.denom===v?'sel':''}`} disabled={v==='usdc' && !(isSolana?SCP_CONFIG.SOLANA_USDC_MINT:SCP_CONFIG.USDC_ADDRESS)} onClick={()=>set('denom',v)}>{l}</button>
+                    {[['token', form.token],['usdc','USDC'],['eth', 'SOL']].map(([v,l])=>(
+                      <button key={v} className={`opt-btn ${form.denom===v?'sel':''}`} disabled={v==='usdc' && !SCP_CONFIG.SOLANA_USDC_MINT} onClick={()=>set('denom',v)}>{l}</button>
                     ))}
                   </div>
-                  {!(isSolana?SCP_CONFIG.SOLANA_USDC_MINT:SCP_CONFIG.USDC_ADDRESS) && <div className="help">USDC isn&rsquo;t deployed on {isSolana?`Solana ${SCP_CONFIG.SOLANA_CLUSTER}`:SCP_CONFIG.CHAIN_NAME} yet, so that option is disabled here.</div>}
+                  {!SCP_CONFIG.SOLANA_USDC_MINT && <div className="help">USDC isn&rsquo;t deployed on Solana {SCP_CONFIG.SOLANA_CLUSTER} yet, so that option is disabled here.</div>}
                 </div>
                 <div className="field">
                   <label>Tracked keyword</label>
@@ -3159,13 +2717,9 @@ function CreateWizard({kind, go, user, solanaUser, notify}){
 
 /* ===================== REGISTER (SSO) ===================== */
 
-function Register({go, user, solanaUser, notify}){
-  const [network, setNetwork] = useState('evm');
-  const isSolana = network==='solana';
-
-  // Solana counterpart of user.xhandle -- no live-updating hook for it the way the EVM
-  // wallet exposes refreshXHandle(), so this re-checks on demand whenever the connected
-  // Solana wallet changes.
+function Register({go, solanaUser, notify}){
+  // No live-updating hook for a Solana wallet's linked handle -- this re-checks on demand
+  // whenever the connected wallet changes.
   const [solanaLink, setSolanaLink] = useState(null); // {xHandle} | null | undefined(loading)
   useEffect(()=>{
     if(!solanaUser.publicKey){ setSolanaLink(null); return; }
@@ -3181,53 +2735,21 @@ function Register({go, user, solanaUser, notify}){
       <div className="wrap" style={{maxWidth:520}}>
         <div className="breadcrumb"><button onClick={()=>go('/')}>Diamond Hand</button> / Register</div>
         <h1 style={{marginBottom:8}}>Link your X account</h1>
-        <p className="camp-meta" style={{marginBottom:20}}>One registration covers every Strong Shill Offering campaign you ever participate in on that network &mdash; this links your wallet to your X handle once, on-chain.</p>
+        <p className="camp-meta" style={{marginBottom:20}}>One registration covers every Strong Shill Offering campaign you ever participate in &mdash; this links your wallet to your X handle once, on-chain. A wallet can link exactly one X handle, ever &mdash; there&rsquo;s no &ldquo;switch handle&rdquo; path yet (see contracts-solana/programs/registry_solana&rsquo;s README).</p>
 
-        <div className="panel" style={{marginBottom:20}}>
-          <div className="eyebrow" style={{marginBottom:10}}>Network</div>
-          <div className="opt-row">
-            <button className={`opt-btn ${!isSolana?'sel':''}`} onClick={()=>setNetwork('evm')}>{SCP_CONFIG.CHAIN_NAME} (EVM)</button>
-            <button className={`opt-btn ${isSolana?'sel':''}`} onClick={()=>setNetwork('solana')}>Solana ({SCP_CONFIG.SOLANA_CLUSTER})</button>
+        <div className="panel">
+          <div className="field">
+            <label>1. Connect Solana wallet</label>
+            {solanaUser.publicKey ? <Tag kind="sho" icon={IcoCheckCirc}>{shortAddr(solanaUser.publicKey.toBase58())} connected</Tag> : <Btn kind="outline" icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>Connect wallet</Btn>}
           </div>
-          {isSolana && (
-            <div className="help" style={{marginTop:10}}>
-              Solana support is new and a wallet can link exactly one X handle, ever &mdash;
-              there&rsquo;s no &ldquo;switch handle&rdquo; path yet (see
-              contracts-solana/programs/registry_solana&rsquo;s README). The on-chain program
-              has never been deployed anywhere real.
-            </div>
-          )}
+          <div className="field">
+            <label>2. Connect X account</label>
+            {solanaLink ? <Tag kind="sso" icon={IcoCheckCirc}>{solanaLink.xHandle} linked on-chain</Tag> : <Btn kind="outline" icon={IcoX} onClick={solanaUser.connectXSolana} disabled={!solanaUser.publicKey}>Connect X (OAuth)</Btn>}
+            {!solanaUser.publicKey && <div className="help">Connect a Solana wallet first.</div>}
+            {solanaUser.publicKey && !solanaLink && <div className="help">Redirects to X to sign in, then comes back here to finish linking with one more wallet signature.</div>}
+          </div>
+          <Btn block icon={IcoShield} disabled={!solanaUser.publicKey || !solanaLink} onClick={()=>go('/sso')}>{solanaLink ? 'Browse SSO campaigns' : 'Complete the steps above'}</Btn>
         </div>
-
-        {isSolana ? (
-          <div className="panel">
-            <div className="field">
-              <label>1. Connect Solana wallet</label>
-              {solanaUser.publicKey ? <Tag kind="sho" icon={IcoCheckCirc}>{shortAddr(solanaUser.publicKey.toBase58())} connected</Tag> : <Btn kind="outline" icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>Connect wallet</Btn>}
-            </div>
-            <div className="field">
-              <label>2. Connect X account</label>
-              {solanaLink ? <Tag kind="sso" icon={IcoCheckCirc}>{solanaLink.xHandle} linked on-chain</Tag> : <Btn kind="outline" icon={IcoX} onClick={solanaUser.connectXSolana} disabled={!solanaUser.publicKey}>Connect X (OAuth)</Btn>}
-              {!solanaUser.publicKey && <div className="help">Connect a Solana wallet first.</div>}
-              {solanaUser.publicKey && !solanaLink && <div className="help">Redirects to X to sign in, then comes back here to finish linking with one more wallet signature.</div>}
-            </div>
-            <Btn block icon={IcoShield} disabled={!solanaUser.publicKey || !solanaLink} onClick={()=>go('/sso')}>{solanaLink ? 'Browse SSO campaigns' : 'Complete the steps above'}</Btn>
-          </div>
-        ) : (
-          <div className="panel">
-            <div className="field">
-              <label>1. Connect wallet</label>
-              {user.wallet ? <Tag kind="sho" icon={IcoCheckCirc}>{shortAddr(user.wallet)} connected</Tag> : <Btn kind="outline" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>}
-            </div>
-            <div className="field">
-              <label>2. Connect X account</label>
-              {user.xhandle ? <Tag kind="sso" icon={IcoCheckCirc}>{user.xhandle} linked on-chain</Tag> : <Btn kind="outline" icon={IcoX} onClick={user.connectX} disabled={!user.wallet}>Connect X (OAuth)</Btn>}
-              {!user.wallet && <div className="help">Connect a wallet first.</div>}
-              {user.wallet && !user.xhandle && <div className="help">Redirects to X to sign in, then comes back here to confirm the on-chain link with one more wallet signature.</div>}
-            </div>
-            <Btn block icon={IcoShield} disabled={!user.wallet || !user.xhandle} onClick={()=>go('/sso')}>{user.xhandle ? 'Browse SSO campaigns' : 'Complete the steps above'}</Btn>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -3236,35 +2758,19 @@ function Register({go, user, solanaUser, notify}){
 /* ===================== LINK X CALLBACK ===================== */
 // Where ../registration-service's /auth/x/callback redirects back to (when it has
 // FRONTEND_URL configured -- see its server.js) after a completed OAuth round-trip. Finishes
-// the on-chain half of PRD §12.3-12.4 that service never does itself: submitting
-// Registry.registerHandle(xHandle, attestation) using the connected wallet.
-function LinkXCallback({go, user, solanaUser, notify}){
+// the on-chain half of PRD §12.3-12.4 that service never does itself: submitRegisterHandleSolana
+// builds the register_handle transaction, fetches the attestor's co-signature from
+// POST /attest/solana (gated on the OAuth-verified marker the service's callback just
+// recorded), and submits -- see that function's own header in the Solana helpers section.
+function LinkXCallback({go, solanaUser, notify}){
   const params = useMemo(()=> parseQuery((window.location.hash.split('?')[1])||''), []);
-  const {wallet: startedWallet, handle, attestation, network, error: oauthError} = params;
-  const isSolana = network==='solana';
+  const {wallet: startedWallet, handle, error: oauthError} = params;
   const [submitting, setSubmitting] = useState(false);
 
-  // EVM: the registration service already handed back a ready-to-submit attestation
-  // (Registry.registerHandle's own ECDSA check verifies it on-chain). Solana: no attestation
-  // comes back at this stage -- submitRegisterHandleSolana builds the transaction itself,
-  // fetches the attestor's co-signature from POST /attest/solana (gated on the OAuth-verified
-  // marker the service's callback just recorded), and submits -- see that function's own
-  // header in the Solana helpers section.
   const confirm = async ()=>{
     setSubmitting(true);
     try {
-      if(isSolana){
-        await submitRegisterHandleSolana({provider: solanaUser.provider, wallet: solanaUser.publicKey, xHandle: handle});
-        notify(`${handle} linked on-chain.`);
-        go('/profile');
-        return;
-      }
-      const signer = await user.getSigner();
-      const registry = new window.ethers.Contract(SCP_CONFIG.REGISTRY_ADDRESS, REGISTRY_ABI, signer);
-      const tx = await registry.registerHandle(handle, attestation);
-      notify('Linking submitted -- waiting for confirmation...');
-      await tx.wait();
-      await user.refreshXHandle();
+      await submitRegisterHandleSolana({provider: solanaUser.provider, wallet: solanaUser.publicKey, xHandle: handle});
       notify(`${handle} linked on-chain.`);
       go('/profile');
     } catch(e){
@@ -3274,8 +2780,10 @@ function LinkXCallback({go, user, solanaUser, notify}){
     }
   };
 
-  const connectedWallet = isSolana ? (solanaUser.publicKey ? solanaUser.publicKey.toBase58() : null) : user.wallet;
-  const walletMismatch = startedWallet && connectedWallet && connectedWallet.toLowerCase()!==String(startedWallet).toLowerCase();
+  const connectedWallet = solanaUser.publicKey ? solanaUser.publicKey.toBase58() : null;
+  // base58 is case-sensitive (unlike an EVM hex address), so this must be an exact match, not
+  // a lower-cased comparison.
+  const walletMismatch = startedWallet && connectedWallet && connectedWallet!==String(startedWallet);
 
   return (
     <div className="page">
@@ -3285,12 +2793,12 @@ function LinkXCallback({go, user, solanaUser, notify}){
         <div className="panel">
           {oauthError ? (
             <div className="you-empty">X sign-in didn&rsquo;t complete: {oauthError}. <button style={{background:'none',border:'none',color:'var(--accent)',textDecoration:'underline',cursor:'pointer',font:'inherit',padding:0}} onClick={()=>go('/register')}>Try again</button></div>
-          ) : !handle || (!isSolana && !attestation) ? (
+          ) : !handle ? (
             <div className="you-empty">Nothing to confirm here &mdash; this page only makes sense right after returning from X sign-in. <button style={{background:'none',border:'none',color:'var(--accent)',textDecoration:'underline',cursor:'pointer',font:'inherit',padding:0}} onClick={()=>go('/register')}>Start registration</button></div>
           ) : !connectedWallet ? (
             <div className="you-empty">
               Reconnect the wallet you started with ({shortAddr(startedWallet)}) to finish linking.
-              <div style={{marginTop:12}}><Btn size="sm" icon={IcoWallet} onClick={isSolana?solanaUser.connectSolanaWallet:user.connectWallet}>Connect wallet</Btn></div>
+              <div style={{marginTop:12}}><Btn size="sm" icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>Connect wallet</Btn></div>
             </div>
           ) : walletMismatch ? (
             <div className="you-empty">This link was started from {shortAddr(startedWallet)}, but {shortAddr(connectedWallet)} is connected now. Switch wallets and reload to continue.</div>
@@ -3298,7 +2806,7 @@ function LinkXCallback({go, user, solanaUser, notify}){
             <>
               <div className="kv"><span className="k">Wallet</span><span className="v">{shortAddr(connectedWallet)}</span></div>
               <div className="kv"><span className="k">X handle</span><span className="v">{handle}</span></div>
-              <p className="camp-meta" style={{margin:'12px 0 16px'}}>X verified this handle for your wallet. {isSolana ? 'One more signature co-signs with the attestor on-chain to finish linking.' : 'One more signature submits Registry.registerHandle(...) on-chain to finish linking.'}</p>
+              <p className="camp-meta" style={{margin:'12px 0 16px'}}>X verified this handle for your wallet. One more signature co-signs with the attestor on-chain to finish linking.</p>
               <Btn block icon={IcoShield} disabled={submitting} onClick={confirm}>{submitting?'Confirming…':'Confirm on-chain'}</Btn>
             </>
           )}
@@ -3310,75 +2818,29 @@ function LinkXCallback({go, user, solanaUser, notify}){
 
 /* ===================== PROFILE ===================== */
 
-function Profile({go, user, notify}){
-  const hasWallet = !!user.wallet;
-  const hasX = !!user.xhandle;
+// No /wallets/:address/{standings,claims,created} equivalent exists for a Solana wallet yet
+// (that whole route file is EVM-only -- ethers.isAddress + ethers.Contract reads against an
+// EVM campaign contract's claimed()/getMilestone()/getEpoch(), none of which have a Solana
+// counterpart written yet). Building one is real, separate work (decoding Anchor accounts,
+// a Solana-side db.createdCampaigns/snapshotsForWallet equivalent), not something this pass
+// -- which only removes EVM, not add new Solana features -- should invent. So this page is
+// honest about the gap rather than silently calling an endpoint that would always 400/empty.
+function Profile({go, solanaUser, notify}){
+  const hasWallet = !!solanaUser.publicKey;
+  const myWallet = hasWallet ? solanaUser.publicKey.toBase58() : null;
+
+  const [solanaLink, setSolanaLink] = useState(null);
+  useEffect(()=>{
+    if(!solanaUser.publicKey){ setSolanaLink(null); return; }
+    let cancelled = false;
+    fetchSolanaHandleLink(SCP_CONFIG.REGISTRY_SOLANA_PROGRAM_ID, solanaUser.publicKey)
+      .then(link=>{ if(!cancelled) setSolanaLink(link); })
+      .catch(()=>{ if(!cancelled) setSolanaLink(null); });
+    return ()=>{ cancelled = true; };
+  }, [solanaUser.publicKey]);
+
+  const hasX = !!solanaLink;
   const connected = hasWallet || hasX;
-  const [refreshTick, setRefreshTick] = useState(0);
-
-  // Cross-referenced against the full campaign lists (same "look it up by address" pattern
-  // the old mock used with SHO_CAMPAIGNS.find/SSO_CAMPAIGNS.find) since the wallet-scoped
-  // endpoints below intentionally return only addresses + numbers, not display fields --
-  // see walletRoutes.js's own header.
-  const shoCampaigns = useApiFetch(hasWallet ? '/sho/campaigns' : null, [hasWallet]);
-  const ssoCampaigns = useApiFetch(hasWallet ? '/sso/campaigns' : null, [hasWallet]);
-  const standings = useApiFetch(hasWallet ? `/wallets/${user.wallet}/standings` : null, [hasWallet, user.wallet, refreshTick]);
-  const claims = useApiFetch(hasWallet ? `/wallets/${user.wallet}/claims` : null, [hasWallet, user.wallet, refreshTick]);
-  const created = useApiFetch(hasWallet ? `/wallets/${user.wallet}/created` : null, [hasWallet, user.wallet, refreshTick]);
-  const [claiming, setClaiming] = useState(null);
-
-  // Normalized (not the raw api/ shape) so these match what CampaignCard/detail pages already
-  // expect -- window/epochLen/denom etc. only exist post-normalization (see
-  // normalizeShoCampaign/normalizeSsoCampaign), the raw response uses windowSeconds/
-  // epochSeconds/rewardTokenSymbol instead.
-  const findSho = (addr)=> {
-    const raw = shoCampaigns.data && shoCampaigns.data.campaigns.find(c=>c.contract.toLowerCase()===addr.toLowerCase());
-    return raw ? normalizeShoCampaign(raw) : null;
-  };
-  const findSso = (addr)=> {
-    const raw = ssoCampaigns.data && ssoCampaigns.data.campaigns.find(c=>c.contract.toLowerCase()===addr.toLowerCase());
-    return raw ? normalizeSsoCampaign(raw) : null;
-  };
-
-  const shoPositions = (standings.data ? standings.data.sho : []).map(s=>({...s, c:findSho(s.campaignAddress)})).filter(p=>p.c);
-  const ssoPositions = (standings.data ? standings.data.sso : []).map(s=>({...s, c:findSso(s.campaignAddress)})).filter(p=>p.c);
-  const createdSho = (created.data ? created.data.created : []).filter(c=>c.factory==='sho').map(c=>({...c, full:findSho(c.id)}));
-  const createdSso = (created.data ? created.data.created : []).filter(c=>c.factory==='sso').map(c=>({...c, full:findSso(c.id)}));
-  const allClaims = claims.data ? claims.data.claims : [];
-  const history = allClaims.filter(cl=>cl.status==='claimed');
-  const claimableEntries = allClaims.filter(cl=>cl.status==='claimable').map(cl=>{
-    const full = cl.factory==='sho' ? findSho(cl.campaignAddress) : findSso(cl.campaignAddress);
-    return {...cl, full};
-  });
-
-  const doClaimFromProfile = async (cl)=>{
-    setClaiming(cl.campaignAddress+':'+cl.index);
-    try {
-      const res = await fetch(`${SCP_CONFIG.API_BASE_URL}/campaigns/${cl.campaignAddress}/claim-proof?wallet=${user.wallet}&index=${cl.index}`);
-      const body = await res.json();
-      if(!res.ok) throw new Error(body.error || 'failed to fetch claim proof');
-      const signer = await user.getSigner();
-      const campaign = new window.ethers.Contract(cl.campaignAddress, CAMPAIGN_ABI, signer);
-      const tx = await campaign.claim(cl.index, body.amount, body.proof);
-      notify('Claim submitted -- waiting for confirmation...');
-      await tx.wait();
-      notify('Claim confirmed.');
-      setRefreshTick(t=>t+1);
-    } catch(e){
-      notify('Claim failed: '+shortError(e));
-    } finally {
-      setClaiming(null);
-    }
-  };
-
-  const totalClaimableAmount = claimableEntries.reduce((s,it)=>s+fmtTokenAmount(it.amount),0);
-  const activeCount = shoPositions.length + ssoPositions.length;
-  const createdCount = createdSho.length + createdSso.length;
-
-  const roles = [];
-  if(shoPositions.length) roles.push({label:'Trader', kind:'sho'});
-  if(ssoPositions.length) roles.push({label:'Shiller', kind:'sso'});
-  if(createdCount) roles.push({label:'Creator', kind:'neutral'});
 
   return (
     <div className="page">
@@ -3388,164 +2850,30 @@ function Profile({go, user, notify}){
         <div className="profile-head">
           <div className="profile-avatar"><IcoWallet size={22}/></div>
           <div style={{flex:1,minWidth:220}}>
-            <h1 style={{fontSize:26,marginBottom:6}}>{hasWallet ? shortAddr(user.wallet) : hasX ? user.xhandle : 'Your profile'}</h1>
+            <h1 style={{fontSize:26,marginBottom:6}}>{hasWallet ? shortAddr(myWallet) : hasX ? solanaLink.xHandle : 'Your profile'}</h1>
             <div style={{display:'flex',flexWrap:'wrap',gap:8,alignItems:'center'}}>
-              {hasWallet && hasX && <span className="camp-meta">{user.xhandle}</span>}
-              {roles.map(r=> <Tag key={r.label} kind={r.kind}>{r.label}</Tag>)}
+              {hasWallet && hasX && <span className="camp-meta">{solanaLink.xHandle}</span>}
             </div>
           </div>
-          {!hasWallet && <Btn size="sm" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>}
+          {!hasWallet && <Btn size="sm" icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>Connect wallet</Btn>}
           {!hasX && <Btn kind="outline" size="sm" icon={IcoX} onClick={()=>go('/register')}>Register X</Btn>}
-          {connected && <Btn kind="ghost" size="sm" icon={IcoLogout} onClick={()=>{user.disconnect(); notify('Logged out.'); go('/');}}>Log out</Btn>}
+          {connected && <Btn kind="ghost" size="sm" icon={IcoLogout} onClick={()=>{solanaUser.disconnect(); notify('Logged out.'); go('/');}}>Log out</Btn>}
         </div>
 
         {!connected ? (
           <div className="empty-state">
             <h3>Connect to see your dashboard</h3>
-            <p>Connect a wallet to track your SHO trading positions, or register your X account to track shilling. Claimable rewards, positions, and history will show up here.</p>
+            <p>Connect a wallet to track your SHO trading positions, or register your X account to track shilling.</p>
             <div style={{display:'flex',gap:10,justifyContent:'center',marginTop:16,flexWrap:'wrap'}}>
-              <Btn icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>
+              <Btn icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>Connect wallet</Btn>
               <Btn kind="outline" icon={IcoX} onClick={()=>go('/register')}>Register X</Btn>
             </div>
           </div>
         ) : (
-          <>
-            <div className="profile-stats">
-              <div className="stat-tile"><IcoCoins size={20}/><div><StatNum value={history.length} format={v=>Math.round(v)}/><span className="lbl">Rewards claimed</span></div></div>
-              <div className="stat-tile accent"><IcoCheckCirc size={20}/><div><StatNum value={claimableEntries.length} format={v=>Math.round(v)}/><span className="lbl">Claimable now</span></div></div>
-              <div className="stat-tile"><IcoTarget size={20}/><div><StatNum value={activeCount} format={v=>Math.round(v)}/><span className="lbl">Active positions</span></div></div>
-              <div className="stat-tile"><IcoFlask size={20}/><div><StatNum value={createdCount} format={v=>Math.round(v)}/><span className="lbl">Campaigns created</span></div></div>
-            </div>
-
-            {claimableEntries.length>0 && (
-              <div className="panel" style={{marginTop:22}}>
-                <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoCheckCirc size={13}/>Claimable now</div>
-                <div className="claim-list">
-                  {claimableEntries.map((it,i)=>(
-                    <div key={i} className="claim-row" onClick={()=>go(`/${it.factory}/${it.campaignAddress}`)}>
-                      <div>
-                        <div style={{fontWeight:600,fontSize:13.5,display:'flex',alignItems:'center',gap:8}}>{it.full ? it.full.token : shortAddr(it.campaignAddress)} <Tag kind={it.factory}>{it.factory==='sho'?'SHO':'SSO'}</Tag></div>
-                        <div className="camp-meta">{it.factory==='sho' ? `Milestone ${it.index}` : `Epoch ${it.index+1}`} reward</div>
-                      </div>
-                      <div style={{display:'flex',alignItems:'center',gap:14}}>
-                        <div style={{textAlign:'right'}}>
-                          <div className="mono" style={{fontWeight:600}}>{fmtNum(fmtTokenAmount(it.amount))} {it.full ? it.full.denom : ''}</div>
-                        </div>
-                        <Btn size="sm" icon={IcoCheckCirc} disabled={claiming===it.campaignAddress+':'+it.index} onClick={(e)=>{e.stopPropagation(); doClaimFromProfile(it);}}>{claiming===it.campaignAddress+':'+it.index ? 'Claiming…' : 'Claim'}</Btn>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {shoPositions.length>0 && (
-              <div className="panel" style={{marginTop:22}}>
-                <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoTrendUp size={13}/>My SHO positions</div>
-                <div className="scroll-x">
-                  <table className="lb-table">
-                    <thead><tr><th>Campaign</th><th>Rank</th><th>Net-buy volume</th><th>Status</th></tr></thead>
-                    <tbody>
-                      {shoPositions.map(p=>(
-                        <tr key={p.campaignAddress} style={{cursor:'pointer'}} onClick={()=>go(`/sho/${p.campaignAddress}`)}>
-                          <td>{p.c.token}</td>
-                          <td className="rank">#{p.rank}</td>
-                          <td className="mono">{fmtUSD(fmtTokenAmount(p.score))}</td>
-                          <td><Tag kind="neutral" icon={IcoClock}>Tracking</Tag></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {ssoPositions.length>0 && (
-              <div className="panel" style={{marginTop:22}}>
-                <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoMegaphone size={13}/>My SSO positions</div>
-                <div className="scroll-x">
-                  <table className="lb-table">
-                    <thead><tr><th>Campaign</th><th>Rank</th><th>Engagement score</th><th>Status</th></tr></thead>
-                    <tbody>
-                      {ssoPositions.map(p=>(
-                        <tr key={p.campaignAddress+':'+p.epochIndex} style={{cursor:'pointer'}} onClick={()=>go(`/sso/${p.campaignAddress}`)}>
-                          <td>{p.c.token}</td>
-                          <td className="rank">#{p.rank}</td>
-                          <td className="mono">{fmtNum(p.score)}</td>
-                          <td><Tag kind="neutral" icon={IcoClock}>Tracking</Tag></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {(createdSho.length>0 || createdSso.length>0) && (
-              <div className="panel" style={{marginTop:22}}>
-                <div className="eyebrow" style={{marginBottom:14,display:'flex',alignItems:'center',gap:6}}><IcoFlask size={13}/>My created campaigns</div>
-                <div className="created-grid">
-                  {createdSho.map(c=>{
-                    const f = c.full;
-                    const distributedBps = f ? f.milestones.filter(m=>m.status==='claimed'||m.status==='claimable').reduce((s,m)=>s+m.bps,0) : 0;
-                    const locked = fmtTokenAmount(f ? f.locked : c.locked, f ? f.rewardDecimals : undefined);
-                    return (
-                      <div key={c.id} className="created-card" onClick={()=>go(`/sho/${c.id}`)}>
-                        <div className="camp-card-top">
-                          <div><div className="ticker">{f ? f.token : shortAddr(c.token)}</div><div className="camp-meta">SHO{f?` · ${f.window} window`:''}</div></div>
-                          <Tag kind="sho">{f && f.milestones.every(m=>m.status==='claimed'||m.status==='claimable') ? 'Completed' : 'Active'}</Tag>
-                        </div>
-                        <div className="kv"><span className="k">Locked</span><span className="v">{fmtNum(locked)} {f ? f.denom : ''}</span></div>
-                        <div className="kv"><span className="k">Distributed</span><span className="v">{distributedBps/100}%</span></div>
-                        <div className="kv"><span className="k">Remaining</span><span className="v">{fmtNum(locked*(10000-distributedBps)/10000)} {f ? f.denom : ''}</span></div>
-                      </div>
-                    );
-                  })}
-                  {createdSso.map(c=>{
-                    const f = c.full;
-                    const distributedEpochs = f ? f.epochs.filter(e=>e.status==='claimed'||e.status==='claimable').length : 0;
-                    const distributedBps = f ? Math.round(10000*distributedEpochs/f.epochs.length) : 0;
-                    const locked = fmtTokenAmount(f ? f.locked : c.locked, f ? f.rewardDecimals : undefined);
-                    return (
-                      <div key={c.id} className="created-card" onClick={()=>go(`/sso/${c.id}`)}>
-                        <div className="camp-card-top">
-                          <div><div className="ticker">{f ? f.token : shortAddr(c.token)}</div><div className="camp-meta">SSO{f?` · ${f.epochLen} epochs`:''}</div></div>
-                          <Tag kind="sso">{f && f.currentEpochIndex==null ? 'Completed' : 'Active'}</Tag>
-                        </div>
-                        <div className="kv"><span className="k">Locked</span><span className="v">{fmtNum(locked)} {f ? f.denom : ''}</span></div>
-                        <div className="kv"><span className="k">Distributed</span><span className="v">{distributedBps/100}%</span></div>
-                        <div className="kv"><span className="k">Remaining</span><span className="v">{fmtNum(locked*(10000-distributedBps)/10000)} {f ? f.denom : ''}</span></div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {history.length>0 && (
-              <div className="panel" style={{marginTop:22}}>
-                <div className="eyebrow" style={{marginBottom:12,display:'flex',alignItems:'center',gap:6}}><IcoTrophy size={13}/>Claim history</div>
-                <div className="scroll-x">
-                  <table className="lb-table">
-                    <thead><tr><th>Date</th><th>Campaign</th><th>Reward</th><th>Amount</th></tr></thead>
-                    <tbody>
-                      {history.map((h,i)=>{
-                        const f = h.factory==='sho' ? findSho(h.campaignAddress) : findSso(h.campaignAddress);
-                        return (
-                          <tr key={i}>
-                            <td className="mono" style={{fontSize:12}}>{h.claimedAt ? new Date(h.claimedAt).toLocaleDateString() : '—'}</td>
-                            <td><span style={{display:'inline-flex',alignItems:'center',gap:8}}>{f ? f.token : shortAddr(h.campaignAddress)} <Tag kind={h.factory}>{h.factory==='sho'?'SHO':'SSO'}</Tag></span></td>
-                            <td className="camp-meta">{h.factory==='sho' ? `Milestone ${h.index}` : `Epoch ${h.index+1}`}</td>
-                            <td className="mono">{fmtNum(fmtTokenAmount(h.amount))} {f ? f.denom : ''} {h.txHash && <a href={explorerTxUrl(h.txHash)} target="_blank" rel="noopener noreferrer" className="camp-meta">(tx)</a>}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </>
+          <div className="empty-state">
+            <h3>No aggregated dashboard yet</h3>
+            <p>Positions, claimable rewards, created campaigns, and claim history aren&rsquo;t aggregated per-wallet for Solana yet. Visit a campaign directly from <button style={{background:'none',border:'none',color:'var(--accent)',textDecoration:'underline',cursor:'pointer',font:'inherit',padding:0}} onClick={()=>go('/sho')}>SHO</button> or <button style={{background:'none',border:'none',color:'var(--accent)',textDecoration:'underline',cursor:'pointer',font:'inherit',padding:0}} onClick={()=>go('/sso')}>SSO</button> to see your standing and claim.</p>
+          </div>
         )}
       </div>
     </div>
@@ -3554,8 +2882,21 @@ function Profile({go, user, notify}){
 
 /* ===================== APP SHELL ===================== */
 
-function TopNav({route, go, theme, setTheme, user, solanaUser}){
+function TopNav({route, go, theme, setTheme, solanaUser}){
   const is = (p)=> route===p || route.startsWith(p+'/');
+
+  // Same lookup Register/Profile make -- no live-updating hook for a Solana wallet's linked
+  // handle, so this re-checks on demand whenever the connected wallet changes.
+  const [solanaLink, setSolanaLink] = useState(null);
+  useEffect(()=>{
+    if(!solanaUser.publicKey){ setSolanaLink(null); return; }
+    let cancelled = false;
+    fetchSolanaHandleLink(SCP_CONFIG.REGISTRY_SOLANA_PROGRAM_ID, solanaUser.publicKey)
+      .then(link=>{ if(!cancelled) setSolanaLink(link); })
+      .catch(()=>{ if(!cancelled) setSolanaLink(null); });
+    return ()=>{ cancelled = true; };
+  }, [solanaUser.publicKey]);
+
   return (
     <div className="topnav">
       <div className="topnav-inner">
@@ -3574,23 +2915,12 @@ function TopNav({route, go, theme, setTheme, user, solanaUser}){
           <button className="theme-toggle" onClick={()=>setTheme(t=>t==='dark'?'light':'dark')} title="Toggle theme" aria-label="Toggle theme">
             {theme==='dark' ? '☀' : '☽'}
           </button>
-          {user.xhandle
-            ? <button className={`nav-chip ${is('/profile')?'active':''}`} onClick={()=>go('/profile')}><IcoCheckCirc size={12}/>{user.xhandle}</button>
+          {solanaLink
+            ? <button className={`nav-chip ${is('/profile')?'active':''}`} onClick={()=>go('/profile')}><IcoCheckCirc size={12}/>{solanaLink.xHandle}</button>
             : <Btn kind="outline" size="sm" icon={IcoX} onClick={()=>go('/register')}>Register X</Btn>}
-          {user.wallet
-            ? <button className={`nav-chip mono ${is('/profile')?'active':''}`} onClick={()=>go('/profile')}><IcoWallet size={12}/>{shortAddr(user.wallet)}</button>
-            : <Btn size="sm" icon={IcoWallet} onClick={user.connectWallet}>Connect wallet</Btn>}
-          {user.wallet && !user.chainOk && <Btn kind="outline" size="sm" onClick={user.connectWallet}>Switch to {SCP_CONFIG.CHAIN_NAME}</Btn>}
-          {/* Diamond Hand is dual-chain, so the nav shows both wallet slots independently --
-              connecting one is never a substitute for the other, unlike CreateWizard/claim
-              buttons where only one network applies at a time (see this project's own
-              "isSolana" branches elsewhere). */}
           {solanaUser.publicKey
-            // Not a <button onClick={()=>go('/profile')}> like the EVM chip above --
-            // Profile doesn't take a solanaUser prop and has no Solana-wallet view yet, so
-            // linking there would be a dead end. Just shows the connected state here.
-            ? <span className="nav-chip mono"><IcoWallet size={12}/>{shortAddr(solanaUser.publicKey.toBase58())}</span>
-            : <Btn kind="outline" size="sm" icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>{solanaUser.connecting ? 'Connecting…' : 'Connect Solana'}</Btn>}
+            ? <button className={`nav-chip mono ${is('/profile')?'active':''}`} onClick={()=>go('/profile')}><IcoWallet size={12}/>{shortAddr(solanaUser.publicKey.toBase58())}</button>
+            : <Btn size="sm" icon={IcoWallet} onClick={solanaUser.connectSolanaWallet}>{solanaUser.connecting ? 'Connecting…' : 'Connect wallet'}</Btn>}
         </div>
       </div>
     </div>
@@ -3599,7 +2929,6 @@ function TopNav({route, go, theme, setTheme, user, solanaUser}){
 
 function App(){
   const [route,go] = useHashRoute();
-  const user = useWallet();
   const solanaUser = useSolanaWallet();
   const [theme,setTheme] = useState(()=> localStorage.getItem('so_theme') || 'dark');
   const [toast,setToast] = useState(null);
@@ -3616,20 +2945,20 @@ function App(){
   const path = route.split('?')[0];
   const parts = path.split('/').filter(Boolean);
   if(route==='/' ) view = <Landing go={go}/>;
-  else if(parts[0]==='sho' && parts[1]==='create') view = <CreateWizard kind="sho" go={go} user={user} solanaUser={solanaUser} notify={notify}/>;
-  else if(parts[0]==='sso' && parts[1]==='create') view = <CreateWizard kind="sso" go={go} user={user} solanaUser={solanaUser} notify={notify}/>;
-  else if(parts[0]==='sho' && parts[1]) view = <SHODetail id={parts[1]} go={go} user={user} solanaUser={solanaUser} notify={notify}/>;
-  else if(parts[0]==='sso' && parts[1]) view = <SSODetail id={parts[1]} go={go} user={user} solanaUser={solanaUser} notify={notify}/>;
+  else if(parts[0]==='sho' && parts[1]==='create') view = <CreateWizard kind="sho" go={go} solanaUser={solanaUser} notify={notify}/>;
+  else if(parts[0]==='sso' && parts[1]==='create') view = <CreateWizard kind="sso" go={go} solanaUser={solanaUser} notify={notify}/>;
+  else if(parts[0]==='sho' && parts[1]) view = <SHODetail id={parts[1]} go={go} solanaUser={solanaUser} notify={notify}/>;
+  else if(parts[0]==='sso' && parts[1]) view = <SSODetail id={parts[1]} go={go} solanaUser={solanaUser} notify={notify}/>;
   else if(parts[0]==='sho') view = <Discover kind="sho" go={go}/>;
   else if(parts[0]==='sso') view = <Discover kind="sso" go={go}/>;
-  else if(parts[0]==='register') view = <Register go={go} user={user} solanaUser={solanaUser} notify={notify}/>;
-  else if(parts[0]==='link-x') view = <LinkXCallback go={go} user={user} solanaUser={solanaUser} notify={notify}/>;
-  else if(parts[0]==='profile') view = <Profile go={go} user={user} notify={notify}/>;
+  else if(parts[0]==='register') view = <Register go={go} solanaUser={solanaUser} notify={notify}/>;
+  else if(parts[0]==='link-x') view = <LinkXCallback go={go} solanaUser={solanaUser} notify={notify}/>;
+  else if(parts[0]==='profile') view = <Profile go={go} solanaUser={solanaUser} notify={notify}/>;
   else view = <Landing go={go}/>;
 
   return (
     <>
-      <TopNav route={route} go={go} theme={theme==='auto'?'dark':theme} setTheme={setTheme} user={user} solanaUser={solanaUser}/>
+      <TopNav route={route} go={go} theme={theme==='auto'?'dark':theme} setTheme={setTheme} solanaUser={solanaUser}/>
       {view}
       {toast && <Toast msg={toast} onDone={()=>setToast(null)}/>}
     </>
