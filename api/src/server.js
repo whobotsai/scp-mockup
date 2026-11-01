@@ -2,6 +2,14 @@
 // service in front of the keeper's Postgres and direct contract reads, never a second source
 // of truth. Everything it returns is reconstructable from chain history plus the keeper's
 // published snapshots.
+//
+// Solana-only by default now (EVM/Robinhood deferred to a later phase -- see
+// docs/SOLANA_MAINNET_LAUNCH_PLAN.md). RPC_URL is optional, same posture as SOLANA_RPC_URL
+// always had: unset means EVM campaign reads stay off (shoRoutes.js/ssoRoutes.js dispatch by
+// row.network and degrade a single bad row rather than crash). tokenRoutes.js/walletRoutes.js
+// are EVM-only with no Solana counterpart written yet (see walletRoutes.js's own header) and
+// nothing in the frontend calls them anymore, so they're left unmounted here rather than
+// deleted -- easy to re-enable when the EVM phase resumes.
 "use strict";
 require("dotenv").config();
 const express = require("express");
@@ -10,30 +18,13 @@ const { buildProvider } = require("./provider");
 const { buildSolanaConnection } = require("./solanaProvider");
 const shoRoutes = require("./shoRoutes");
 const ssoRoutes = require("./ssoRoutes");
-const tokenRoutes = require("./tokenRoutes");
-const walletRoutes = require("./walletRoutes");
 const claimRoutes = require("./claimRoutes");
 
-// Confirmed live: with RPC_URL unset, buildProvider() still succeeds (ethers.FetchRequest
-// happily accepts an empty string) and the process starts up looking fine -- every route then
-// fails on its first contract read with ethers' own cryptic "unsupported protocol
-// (info={"protocol":""}...)" error, which says nothing about RPC_URL at all. Same
-// requireEnv-at-startup pattern ../registration-service/src/server.js already uses, so this
-// fails loud and immediately instead of quietly shipping a broken deployment.
-function requireEnv(name) {
-  const value = process.env[name];
-  if (!value) {
-    console.error(`Missing required env var: ${name} (see .env.example)`);
-    process.exit(1);
-  }
-  return value;
-}
-
 function main() {
-  requireEnv("RPC_URL");
   const provider = buildProvider();
-  // Optional -- unset means this API stays EVM-only (see solanaProvider.js), same posture
-  // as the keeper's own SOLANA_RPC_URL.
+  if (!provider) {
+    console.log("[api] RPC_URL not set -- EVM campaigns will fail to load individually, not block the API.");
+  }
   const solanaConnection = buildSolanaConnection();
   if (!solanaConnection) {
     console.log("[api] SOLANA_RPC_URL not set -- Solana campaigns will fail to load individually, not block the API.");
@@ -45,8 +36,6 @@ function main() {
 
   app.use(shoRoutes.router(provider, solanaConnection));
   app.use(ssoRoutes.router(provider, solanaConnection));
-  app.use(tokenRoutes.router(provider));
-  app.use(walletRoutes.router(provider));
   app.use(claimRoutes.router());
 
   const port = Number(process.env.PORT || 3001);
