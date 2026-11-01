@@ -4,7 +4,10 @@
   "description": "Anchor TS test suite for sho_solana / sso_solana / registry_solana -- see Anchor.toml's [scripts] and README.md's 'Next steps'",
   "scripts": {
     "test": "ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts",
-    "initialize": "ts-node scripts/initialize.ts"
+    "initialize": "ts-node scripts/initialize.ts",
+    "test:01-create-campaign": "ts-node scripts/test/01-create-campaign.ts",
+    "test:02-post-root": "ts-node scripts/test/02-post-root.ts",
+    "test:03-claim": "ts-node scripts/test/03-claim.ts"
   },
   "devDependencies": {
     "@coral-xyz/anchor": "0.30.1",

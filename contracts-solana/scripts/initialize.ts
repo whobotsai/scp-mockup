@@ -10,42 +10,13 @@
 //
 // Usage: SOLANA_RPC_URL=... AUTHORITY_KEYPAIR=/path/to/id.json npx ts-node scripts/initialize.ts
 "use strict";
-import * as fs from "fs";
-import * as path from "path";
-import * as toml from "@iarna/toml";
-import { AnchorProvider, Program, Wallet } from "@coral-xyz/anchor";
-import { Connection, Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
-
-function loadKeypair(keypairPath: string): Keypair {
-  const raw = JSON.parse(fs.readFileSync(keypairPath, "utf8"));
-  return Keypair.fromSecretKey(Uint8Array.from(raw));
-}
-
-function loadIdl(name: string) {
-  return JSON.parse(fs.readFileSync(path.join(__dirname, "..", "target", "idl", `${name}.json`), "utf8"));
-}
-
-function programIdFromAnchorToml(name: string): PublicKey {
-  const anchorToml = toml.parse(fs.readFileSync(path.join(__dirname, "..", "Anchor.toml"), "utf8")) as any;
-  const cluster = process.env.ANCHOR_CLUSTER || anchorToml.provider?.cluster || "localnet";
-  const section = anchorToml.programs?.[cluster];
-  if (!section?.[name]) {
-    throw new Error(`Anchor.toml has no [programs.${cluster}] entry for ${name} -- run anchor keys list and paste it in first (README.md step 1/3).`);
-  }
-  return new PublicKey(section[name]);
-}
+import { Program } from "@coral-xyz/anchor";
+import { PublicKey, SystemProgram } from "@solana/web3.js";
+import { loadIdl, makeProvider, programIdFromAnchorToml } from "./lib";
 
 async function main() {
+  const { provider, wallet: authority, connection } = makeProvider();
   const rpcUrl = process.env.SOLANA_RPC_URL;
-  const authorityKeypairPath = process.env.AUTHORITY_KEYPAIR;
-  if (!rpcUrl || !authorityKeypairPath) {
-    console.error("Set SOLANA_RPC_URL and AUTHORITY_KEYPAIR before running this.");
-    process.exit(1);
-  }
-
-  const connection = new Connection(rpcUrl, "confirmed");
-  const authority = loadKeypair(authorityKeypairPath);
-  const provider = new AnchorProvider(connection, new Wallet(authority), { commitment: "confirmed" });
 
   console.log(`Cluster: ${rpcUrl}`);
   console.log(`Authority: ${authority.publicKey.toBase58()}`);
