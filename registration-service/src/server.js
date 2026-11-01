@@ -39,11 +39,12 @@ const PORT = process.env.PORT || 3002;
 const CLIENT_ID = requireEnv("X_CLIENT_ID");
 const CLIENT_SECRET = requireEnv("X_CLIENT_SECRET");
 const REDIRECT_URI = requireEnv("X_REDIRECT_URI");
-const attestorWallet = new ethers.Wallet(requireEnv("ATTESTOR_PRIVATE_KEY"));
-// Optional, unlike ATTESTOR_PRIVATE_KEY above: a *different* key (Ed25519, not secp256k1 --
-// see solanaAttestation.js's own header for why the EVM attestor key can't be reused as-is).
-// This service still boots and works EVM-only without it, same "optional, stays off without
-// it" posture the rest of this project's Solana support uses.
+// EVM/Robinhood support, deferred to a later phase (see docs/SOLANA_MAINNET_LAUNCH_PLAN.md).
+// Optional now -- this used to be requireEnv()'d, which meant the whole service refused to
+// start without an EVM attestor key configured, even to run Solana-only. /auth/x/start's EVM
+// branch (network !== 'solana') now 503s instead of this module ever calling .address on
+// null, same "stays off without it" posture SOLANA_ATTESTOR_PRIVATE_KEY already had.
+const attestorWallet = process.env.ATTESTOR_PRIVATE_KEY ? new ethers.Wallet(process.env.ATTESTOR_PRIVATE_KEY) : null;
 const solanaAttestorKeypair = process.env.SOLANA_ATTESTOR_PRIVATE_KEY
   ? loadSolanaAttestorKeypair(process.env.SOLANA_ATTESTOR_PRIVATE_KEY)
   : null;
@@ -54,12 +55,16 @@ const solanaAttestorKeypair = process.env.SOLANA_ATTESTOR_PRIVATE_KEY
 // stays usable standalone for manual/dev testing exactly as before.
 const FRONTEND_URL = process.env.FRONTEND_URL || null;
 
-console.log(`Attestor address: ${attestorWallet.address}`);
-console.log(
-  "This must match Registry.attestor() on-chain (see ../contracts/deployments/46630.json's " +
-    "\"attestor\" field) -- if it doesn't, call Registry.setAttestor(...) as the contract " +
-    "owner to point it at this address."
-);
+if (attestorWallet) {
+  console.log(`Attestor address: ${attestorWallet.address}`);
+  console.log(
+    "This must match Registry.attestor() on-chain (see ../contracts/deployments/46630.json's " +
+      "\"attestor\" field) -- if it doesn't, call Registry.setAttestor(...) as the contract " +
+      "owner to point it at this address."
+  );
+} else {
+  console.log("ATTESTOR_PRIVATE_KEY not set -- EVM handle registration is disabled this run.");
+}
 if (solanaAttestorKeypair) {
   console.log(`Solana attestor pubkey: ${solanaAttestorKeypair.publicKey.toBase58()}`);
   console.log(
@@ -148,6 +153,9 @@ app.get("/auth/x/start", (req, res) => {
   }
   if (network === "solana" && !solanaAttestorKeypair) {
     return res.status(503).send("Solana handle registration is not configured on this service (SOLANA_ATTESTOR_PRIVATE_KEY unset).");
+  }
+  if (network === "evm" && !attestorWallet) {
+    return res.status(503).send("EVM handle registration is not configured on this service (ATTESTOR_PRIVATE_KEY unset).");
   }
 
   const state = randomState();
