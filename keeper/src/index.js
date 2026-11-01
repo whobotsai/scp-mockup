@@ -109,7 +109,18 @@ async function tickSso(provider, c) {
 }
 
 async function tick(provider, keeperWallet, publishIntervalMs, solanaConnection, solanaKeeperKeypair) {
-  await pollNewCampaigns(provider, process.env.SHO_FACTORY_ADDRESS, Number(process.env.SHO_FACTORY_DEPLOY_BLOCK || 0));
+  // EVM/Robinhood discovery is deferred to a later phase (see
+  // docs/SOLANA_MAINNET_LAUNCH_PLAN.md) and optional like every other EVM piece below --
+  // this one used to be the single exception, called unconditionally with no env-var gate.
+  // Previously confirmed live: with RPC_URL unset, provider.getBlockNumber() inside
+  // pollNewCampaigns() throws immediately and uncaught (no try/catch wraps this call), which
+  // aborts this entire tick() before SSO/Registry/Solana discovery, every campaign's own tick,
+  // snapshot publishing, root posting, or the missed-root alert ever ran -- meaning a
+  // Solana-only deployment (RPC_URL unset, SOLANA_RPC_URL set) never actually did anything,
+  // every tick, forever. SHO_FACTORY_ADDRESS gates it now, same pattern as SSO/Registry below.
+  if (process.env.SHO_FACTORY_ADDRESS) {
+    await pollNewCampaigns(provider, process.env.SHO_FACTORY_ADDRESS, Number(process.env.SHO_FACTORY_DEPLOY_BLOCK || 0));
+  }
 
   // SSO/Registry discovery only run once their addresses are actually configured -- this
   // keeper still works SHO-only (as it always has) for anyone who hasn't set these yet,
@@ -213,8 +224,7 @@ async function main() {
 
   // Solana campaign discovery (see "if (solanaConnection ..." in tick() above) is entirely
   // optional, same posture as SSO_FACTORY_ADDRESS/REGISTRY_ADDRESS — no SOLANA_RPC_URL means
-  // no Connection is even constructed, and the keeper stays EVM-only, exactly as it always
-  // has been.
+  // no Connection is even constructed, and Solana discovery stays off this run.
   const solanaConnection = process.env.SOLANA_RPC_URL ? new Connection(process.env.SOLANA_RPC_URL, "confirmed") : null;
   if (!solanaConnection) {
     console.log("[keeper] SOLANA_RPC_URL not set -- Solana campaign discovery is disabled this run.");
