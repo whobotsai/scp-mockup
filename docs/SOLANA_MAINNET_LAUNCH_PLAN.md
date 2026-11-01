@@ -1,8 +1,12 @@
 # Solana Mainnet Launch Plan — target: this week
 
 Scope: **Solana only**. EVM/Robinhood Chain is explicitly deferred to a later phase per
-direct instruction — nothing below touches `contracts/`, `keeper`'s EVM paths, or the EVM
-half of the frontend; they keep working as-is and just aren't the launch gate.
+direct instruction — `contracts/` (Solidity) stays in the repo untouched, but EVM has since
+been fully stripped from the live app surface: `public/index.html` has no EVM wallet/network
+picker left at all, and `api`/`keeper`/`registration-service` all run Solana-only by default
+now (RPC_URL/ATTESTOR_PRIVATE_KEY/EVM campaign discovery are optional, not required — see
+each service's own git history for the exact fix). Re-enabling EVM later means reconnecting
+these, not rewriting them.
 
 ## Read this first: the honest starting position
 
@@ -49,15 +53,31 @@ hidden — read the "Decide now" calls under P1 before committing to a date.
       instruction is actually correct. This is still the first real correctness check this
       code will have had once step below actually runs it — budget real time to fix what it
       finds, not just to have written it.
+- [x] Terminal-only manual test scripts (no browser/wallet extension needed) for all three
+      programs: `contracts-solana/scripts/test/{01-create-campaign,02-post-root,03-claim}.ts`
+      (SHO), `sso-{01,02,03}-*.ts` (SSO — flags the real difference from SHO: `post_epoch_root`
+      needs actual wall-clock time to pass, it isn't purely keeper-discretion the way SHO's
+      milestone root is), and `registry-01-register.ts` (Registry, single step). Same "written
+      and type-checked, never executed" caveat as the TS test suite above.
 - [ ] `anchor test` against a local validator. **Fix everything it surfaces before moving
       on** — nothing past this point is trustworthy until this is green.
-- [ ] Deploy all three programs to **devnet**. `initialize_config` for each.
-- [ ] Point every `.env`/`SCP_CONFIG` at the real devnet program ids + a devnet RPC URL.
-      Run the **entire flow live, once, end to end**, with devnet SOL/SPL tokens: create a
-      SHO campaign → price samples land → leaderboard populates → a milestone crosses →
-      snapshot computes → root posts → claim succeeds. Separately: link an X account on
-      Solana → create an SSO campaign → a qualifying post gets indexed → an epoch closes →
-      root posts. Every one of these steps is unverified until this runs for real.
+- [ ] Deploy all three programs to **devnet**. `initialize_config` for each
+      (`scripts/initialize.ts` already does this, not a manual Anchor CLI call).
+- [ ] **Host `api`/`keeper`/`registration-service` somewhere publicly reachable** (a VPS or a
+      PaaS like Railway/Render/Fly.io, plus a real Postgres). This is not optional
+      infrastructure polish — right now all three only run on localhost, which means nothing
+      below (including the live smoke test) can involve a second real person or device. This
+      is a bigger lift than it sounds and should start in parallel with the toolchain work,
+      not after it.
+- [ ] Point every `.env`/`SCP_CONFIG` at the real devnet program ids + a devnet RPC URL +
+      the now-hosted backend URLs. Run the **entire flow live, once, end to end**, with
+      devnet SOL/SPL tokens: create a SHO campaign → price samples land → leaderboard
+      populates → a milestone crosses → snapshot computes → root posts → claim succeeds.
+      Separately: link an X account on Solana → create an SSO campaign → a qualifying post
+      gets indexed → an epoch closes → root posts → **claim succeeds** (the SSO claim UI now
+      exists in the frontend and `/wallets/:address/{standings,claims,created}` now has a
+      Solana branch too — both unverified live until this step actually runs). Every one of
+      these steps is unverified until this runs for real.
 
 ## P1 — Must-have before real funds are at risk. Decide-now items marked explicitly.
 
@@ -91,8 +111,14 @@ hidden — read the "Decide now" calls under P1 before committing to a date.
   - A real X Developer App with OAuth 2.0 PKCE enabled and (if needed) elevated/paid API
     access for the search-recent endpoint's actual rate limits under live traffic — see
     "start today" above.
-  - A real `SOLANA_ATTESTOR_PRIVATE_KEY` (Ed25519) and `ATTESTOR_PRIVATE_KEY` (EVM, if the
-    EVM registry stays live in parallel), generated fresh, never the placeholder.
+  - A real `SOLANA_ATTESTOR_PRIVATE_KEY` (Ed25519), generated fresh, never the placeholder
+    (`ATTESTOR_PRIVATE_KEY`, the EVM one, is optional now and irrelevant unless the EVM
+    phase comes back).
+- [ ] **Watch the cost/latency of the new Solana SHO wallet-standings read**
+      (`api/src/walletRoutes.js`'s `solanaShoStandings`): with no local trades table for
+      Solana, it checks *every* known Solana SHO campaign's live Birdeye leaderboard per
+      Profile-page load for a wallet. Fine at today's campaign count; revisit (e.g. skip
+      campaigns past their duration, or cache) if that stops being true before mainnet.
 - [ ] **Resolve or explicitly accept the `bigint-buffer` advisory** (`@solana/web3.js@1.95.3`
       pulls in a high-severity buffer-overflow-vulnerable transitive dep; the fix is the
       breaking v2/v3 API, which touches keeper + API + the vendored frontend bundle and
@@ -107,27 +133,23 @@ hidden — read the "Decide now" calls under P1 before committing to a date.
 
 ## P2 — Scope decision: what actually launches day one
 
-- [ ] **Recommend: launch SHO-only first, SSO shortly after.** SHO has a complete,
-      cross-checked pipeline (create → price → leaderboard → milestone → claim) and a
-      working claim UI. SSO's pipeline is equally complete on the keeper/program side, but
-      **its claim UI does not exist yet** (`claim_sol`/`claim_spl` are never called for SSO,
-      on either network) — building it is a real task (mirrors SHO's `submitShoClaimSolana`
-      + `claimRoutes.js` branch, a day of focused work, not a week), and SSO additionally
-      depends on the X Developer App approval and a live Registry flow nobody has tested
-      yet. Launching SHO alone first materially shrinks the untested surface going live
-      with real money, and SSO follows once P0's live smoke test has actually exercised it.
-      If SSO must launch day one regardless, budget explicit time for its claim UI and
-      treat its larger untested surface as a known, accepted risk.
+- [x] ~~Recommend: launch SHO-only first, SSO shortly after~~ — **superseded.** SSO's claim
+      UI now exists (`submitSsoClaimSolana` + `claimRoutes.js`'s existing network-agnostic
+      dispatch), and SSO is feature-complete on the frontend now too. SHO and SSO are
+      equally untested live at this point — neither has an edge over the other anymore. The
+      live smoke test above still needs to exercise both regardless; whether to launch them
+      simultaneously or stage SHO first purely to shrink week-1 scope is now a pure
+      product/risk-appetite call, not something forced by a missing feature.
+  - EVM network-picker visibility is **moot** — there's no EVM picker left to hide; it was
+    removed from the frontend entirely (see the top of this doc).
 - [ ] Frontend: point every `SCP_CONFIG` Solana value at mainnet-beta (cluster, RPC URL,
-      explorer URL, the three real program ids from P0). Confirm the Firebase Hosting
-      deploy actually picks up these values (check which `.env`/build-time config the
-      static `public/index.html` deploy currently bakes in — it's a static file, not
-      server-rendered, so "point at mainnet" means rebuilding/redeploying with the new
-      `SCP_CONFIG`, not just an env var flip somewhere).
-  - Per "leaving Robinhood for later phase": decide whether the EVM network-picker
-    options stay visible (clearly marked testnet-only) or get hidden entirely for this
-    launch — a product call, not an engineering one, but needs an explicit answer so the
-    UI doesn't silently offer a half-supported path.
+      explorer URL, the three real program ids from P0, plus `API_BASE_URL`/
+      `REGISTRATION_SERVICE_URL` at the hosted backend from P0 — these still default to
+      `localhost`). Confirm the Firebase Hosting deploy actually picks up these values — it's
+      a static file, not server-rendered, so "point at mainnet" means rebuilding/redeploying
+      with the new `SCP_CONFIG`, not just an env var flip somewhere. **Deploy frontend last**,
+      only after the backend is actually hosted and reachable — deploying it first replaces
+      whatever's currently live with a build that can't reach anything.
 
 ## P3 — Explicitly deferred, not a launch blocker
 
@@ -152,17 +174,23 @@ Kick off **today**, regardless of engineering sequencing: legal review, X Develo
 approval chase, provisioning real RPC/Postgres/Birdeye accounts (these are forms and
 waiting, not code — don't let them start on day 4).
 
-- **Day 1-2**: Toolchain, `anchor build`, fix BPF-specific compile surprises, write the TS
-  test suite.
+- **Day 1**: Toolchain, `anchor build`, fix BPF-specific compile surprises. (The TS test
+  suite and manual terminal scripts are already written — this day is purely toolchain +
+  build now, not also writing tests.)
+- **Day 1-2** (parallel with the above): Start provisioning backend hosting (VPS/PaaS +
+  Postgres) — this doesn't depend on the contracts being built yet, so don't sequence it
+  after P0 the way the checklist above reads top-to-bottom.
 - **Day 2-3**: `anchor test` — fix everything it finds. Expect this to take longer than it
   looks; this is genuinely the first time any of this logic has run.
-- **Day 3-4**: Devnet deploy, the full live end-to-end smoke test (P0's last item). Fix
-  whatever that reveals too — a passing local-validator test suite doesn't guarantee a
-  clean live run against real network latency/confirmation timing.
-- **Day 4-5**: Production infra wiring, signer-model decision executed, reward-mint
-  allowlist decision executed.
+- **Day 3-4**: Devnet deploy, backend services actually running against the hosted
+  infrastructure, the full live end-to-end smoke test (P0's last item) — SHO *and* SSO, both
+  are feature-complete now. Fix whatever that reveals too — a passing local-validator test
+  suite doesn't guarantee a clean live run against real network latency/confirmation timing.
+- **Day 4-5**: Production infra wiring (mainnet RPC, real Birdeye/X keys), signer-model
+  decision executed, reward-mint allowlist decision executed.
 - **Day 5-6**: Mainnet deploy. Tiny real-fund smoke test before any public announcement.
-  Frontend cutover to mainnet config.
+  Frontend cutover to mainnet config and hosted backend URLs — deployed *last*, once
+  everything it points at is actually live.
 - **Day 6-7**: Buffer — for the inevitable slip, for legal/X-approval if still pending
   (don't launch publicly before these land, even if code is ready), for monitoring
   validation.
