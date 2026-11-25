@@ -1,5 +1,17 @@
 # Mainnet Launch Checklist
 
+> **STALE — superseded by `docs/SOLANA_MAINNET_LAUNCH_PLAN.md`.** This file predates the later,
+> explicit decision to strip EVM out of the active frontend/backend and focus solely on Solana
+> ("hapus dulu semua fungsi evm, kita akan fokus ke Solana"). Several claims below no longer
+> match the code — e.g. Phase 0/2 describe a `CreateWizard` network picker and dual EVM/Solana
+> wallet connect that have since been **removed** (the frontend is Solana-only now), and this
+> file still frames EVM and Solana as two parallel supported networks, which is no longer true:
+> EVM is dormant, not actively worked on. Kept here for its EVM history (Phase 0's testnet
+> deployment record, Phase 3/4's EVM-specific hardening items are still real future work if/when
+> EVM is revisited) and because Phase 3 (security hardening) and Phase 4 (legal) haven't been
+> re-triaged into the newer doc yet. **For current, actually-tracked Solana P0/P1/P2/P3 status,
+> read `docs/SOLANA_MAINNET_LAUNCH_PLAN.md` instead — that one is kept up to date.**
+
 Tracks everything still open before Diamond Hand (SHO + SSO) can launch on mainnet, across
 both supported networks (EVM and Solana). Pulled together from `docs/BACKEND_ROADMAP.md`'s
 existing Stage 3/4 gate, `contracts/README.md`'s own "Open items", and everything built

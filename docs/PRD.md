@@ -2,7 +2,21 @@
 
 **Status:** Draft v4 — full documentation (spec + guides + contract reference + FAQ) for both campaign types
 **Audience:** Engineering team, investors/partners, token creators, traders, and social supporters
-**Chain target:** Robinhood Chain (Arbitrum Orbit, chain ID 4663, EVM-equivalent) — integrates with the Pons.family launchpad (bonding-curve tokens that graduate to Uniswap V4) and, for Part B, the X/Twitter API
+**Chain target:** Robinhood Chain (Arbitrum Orbit, chain ID 4663, EVM-equivalent) — integrates with the Pons.family launchpad (bonding-curve tokens that graduate to Uniswap V4) and, for Part B, the X/Twitter API. **This was the original target and is where the only real, deployed-and-verified-on-testnet implementation lives (`contracts/`, Solidity) — see the status note below.**
+
+> **Implementation status, updated after the Solana pivot:** active development has moved to a
+> Solana port (`contracts-solana/` — Anchor programs `sho_solana`/`sso_solana`/`registry_solana`,
+> plus Solana-only `api`/`keeper`/`registration-service`/frontend code), by explicit decision,
+> **not** because anything below was wrong for EVM. The EVM path above (chain target, Pons.family
+> integration, every Solidity interface in §3/§4/§10) is **dormant, not deleted** — it was the
+> first version actually deployed and exercised live on Robinhood Chain Testnet (real campaign,
+> real milestone root, real claim). The Solana port is currently *less* proven than the EVM
+> version it's replacing as the active target: the three Anchor programs have passed `cargo
+> check` only, have never been built with a real `anchor` toolchain, tested, or deployed anywhere
+> — see `docs/SOLANA_MAINNET_LAUNCH_PLAN.md` for the actual P0/P1/P2/P3 state. Read everything
+> below as the EVM-era spec; it still documents the mechanism/economics correctly (those are
+> chain-agnostic), but every contract address, ABI, and chain-specific integration detail
+> describes the dormant EVM path, not the Solana programs currently being built toward.
 
 **Diamond Hand** turns a cost every token creator already pays, burning or locking part of their bag, into a performance-based growth budget instead. Tokens go into a reward pool that only pays out for behavior that actually grows the token: no growth, no payout, and the pool stays locked forever, exactly as if it had been burned in the first place. It ships with two campaign types: **Strong Hold Offering (SHO)** pays active traders, and **Strong Shill Offering (SSO)** pays active social supporters. Neither issues a new token or dilutes existing holders: the reward pool is money creators were already writing off, simply redirected toward the outcome they wanted all along.
 
